@@ -18,6 +18,12 @@ interface ThroughputResult {
   throughput: number;
 }
 
+// Utility function to add random delays simulating real-world variance
+async function randomDelay(probability: number = 0.9, maxDelayMs: number = 5): Promise<void> {
+  if (Math.random() > probability) {
+    await new Promise(r => setTimeout(r, Math.random() * maxDelayMs));
+  }
+}
 
 describe('AsyncQueue Stress Tests', () => {
   jest.setTimeout(30000); // Increase timeout for stress tests
@@ -33,10 +39,7 @@ describe('AsyncQueue Stress Tests', () => {
         for (let i = 0; i < ITEM_COUNT; i++) {
           await queue.enqueue(i);
           produced.push(i);
-          // Add random delay to simulate real-world variance
-          if (Math.random() > 0.9) {
-            await new Promise(r => setTimeout(r, Math.random() * 5));
-          }
+          await randomDelay(0.9, 5);
         }
         queue.close();
       }
@@ -46,10 +49,7 @@ describe('AsyncQueue Stress Tests', () => {
           const item = await queue.dequeue();
           if (item !== undefined) {
             consumed.push(item);
-            // Add random delay to simulate processing
-            if (Math.random() > 0.8) {
-              await new Promise(r => setTimeout(r, Math.random() * 3));
-            }
+            await randomDelay(0.8, 3);
           }
         }
       }
@@ -87,9 +87,7 @@ describe('AsyncQueue Stress Tests', () => {
           produced.add(item);
 
           // Simulate varying production rates
-          if (Math.random() > 0.8) {
-            await new Promise(r => setTimeout(r, Math.random() * 2));
-          }
+          await randomDelay(0.8, 2);
         }
         producerStats.set(id, items.length);
       }
@@ -104,9 +102,7 @@ describe('AsyncQueue Stress Tests', () => {
           count++;
 
           // Simulate varying consumption rates
-          if (Math.random() > 0.9) {
-            await new Promise(r => setTimeout(r, Math.random() * 3));
-          }
+          await randomDelay(0.9, 3);
         }
         consumerStats.set(id, count);
       }
@@ -456,9 +452,7 @@ describe('AsyncQueue Stress Tests', () => {
           for (let i = 0; i < ITEM_COUNT; i++) {
             await queue.enqueue(i);
             // Small random delay for more realistic testing
-            if (Math.random() > 0.95) {
-              await new Promise(r => setTimeout(r, 1));
-            }
+            await randomDelay(0.95, 1);
           }
           queue.close();
         }
@@ -468,9 +462,7 @@ describe('AsyncQueue Stress Tests', () => {
             const item = await queue.dequeue();
             if (item === undefined) break;
             // Small random delay for more realistic testing
-            if (Math.random() > 0.95) {
-              await new Promise(r => setTimeout(r, 1));
-            }
+            await randomDelay(0.95, 1);
           }
         }
 
@@ -509,9 +501,7 @@ describe('AsyncQueue Stress Tests', () => {
           await queue.enqueue(i);
           producedItems.push(i);
           // Random delays
-          if (Math.random() > 0.9) {
-            await new Promise(r => setTimeout(r, Math.random() * 2));
-          }
+          await randomDelay(0.9, 2);
         }
         queue.close();
       }
@@ -523,9 +513,7 @@ describe('AsyncQueue Stress Tests', () => {
           if (item === undefined) break;
           consumedItems.push(item);
           // Random delays
-          if (Math.random() > 0.9) {
-            await new Promise(r => setTimeout(r, Math.random() * 2));
-          }
+          await randomDelay(0.9, 2);
         }
       }
 
