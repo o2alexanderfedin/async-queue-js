@@ -25,6 +25,10 @@ async function randomDelay(probability: number = 0.9, maxDelayMs: number = 5): P
   }
 }
 
+async function yieldControl(): Promise<void> {
+  return await new Promise<void>(resolve => queueMicrotask(resolve));
+}
+
 describe('AsyncQueue Stress Tests', () => {
   jest.setTimeout(30000); // Increase timeout for stress tests
 
@@ -61,6 +65,47 @@ describe('AsyncQueue Stress Tests', () => {
       expect(produced).toHaveLength(ITEM_COUNT);
       expect(consumed).toHaveLength(ITEM_COUNT);
       expect(consumed).toEqual(produced);
+      expect(duration).toBeLessThan(5000); // Should complete within 5 seconds
+
+      console.log(`      Processed ${ITEM_COUNT} items in ${duration}ms (${Math.round(ITEM_COUNT / (duration / 1000))} items/sec)`);
+    });
+
+    test('should handle 1000,000 items with single producer/consumer', async () => {
+      const queue = new AsyncQueue<number>(10);
+      const ITEM_COUNT = 1000000;
+      let producedCount: number = 0;
+      let consumedCount: number = 0;
+      let producedMax: number = 0;
+      let consumedMax: number = 0;
+
+      async function producer(): Promise<void> {
+        for (let i = 0; i < ITEM_COUNT; i++) {
+          await queue.enqueue(i);
+          producedCount++;
+          producedMax = i;
+          await yieldControl();
+        }
+        queue.close();
+      }
+
+      async function consumer(): Promise<void> {
+        while (!queue.isClosed || queue.size > 0) {
+          const item = await queue.dequeue();
+          if (item !== undefined) {
+            consumedCount++;
+            consumedMax = Math.max(consumedMax, item);
+            await yieldControl();
+          }
+        }
+      }
+
+      const startTime = Date.now();
+      await Promise.all([producer(), consumer()]);
+      const duration = Date.now() - startTime;
+
+      expect(producedCount).toBe(ITEM_COUNT);
+      expect(consumedCount).toBe(ITEM_COUNT);
+      expect(consumedMax).toBe(producedMax);
       expect(duration).toBeLessThan(5000); // Should complete within 5 seconds
 
       console.log(`      Processed ${ITEM_COUNT} items in ${duration}ms (${Math.round(ITEM_COUNT / (duration / 1000))} items/sec)`);
