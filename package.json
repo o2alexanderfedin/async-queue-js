@@ -1,0 +1,20 @@
+{
+  "name": "async-queue-js",
+  "version": "1.0.0",
+  "description": "JavaScript implementation of an async producer-consumer queue with backpressure control",
+  "main": "async-queue.js",
+  "scripts": {
+    "test": "node async-queue.test.js"
+  },
+  "keywords": [
+    "async",
+    "queue",
+    "backpressure",
+    "producer-consumer",
+    "channel",
+    "concurrent",
+    "push-pull"
+  ],
+  "author": "",
+  "license": "MIT"
+}
