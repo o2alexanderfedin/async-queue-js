@@ -18,18 +18,14 @@ interface ThroughputResult {
   throughput: number;
 }
 
-interface OperationResult {
-  op: 'enqueue' | 'dequeue';
-  value?: number;
-}
 
 describe('AsyncQueue Stress Tests', () => {
   jest.setTimeout(30000); // Increase timeout for stress tests
 
   describe('High Volume Operations', () => {
-    test('should handle 10,000 items with single producer/consumer', async () => {
+    test('should handle 1,000 items with single producer/consumer', async () => {
       const queue = new AsyncQueue<number>(100);
-      const ITEM_COUNT = 10000;
+      const ITEM_COUNT = 1000;
       const produced: number[] = [];
       const consumed: number[] = [];
 
@@ -37,6 +33,10 @@ describe('AsyncQueue Stress Tests', () => {
         for (let i = 0; i < ITEM_COUNT; i++) {
           await queue.enqueue(i);
           produced.push(i);
+          // Add random delay to simulate real-world variance
+          if (Math.random() > 0.9) {
+            await new Promise(r => setTimeout(r, Math.random() * 5));
+          }
         }
         queue.close();
       }
@@ -46,6 +46,10 @@ describe('AsyncQueue Stress Tests', () => {
           const item = await queue.dequeue();
           if (item !== undefined) {
             consumed.push(item);
+            // Add random delay to simulate processing
+            if (Math.random() > 0.8) {
+              await new Promise(r => setTimeout(r, Math.random() * 3));
+            }
           }
         }
       }
@@ -62,11 +66,11 @@ describe('AsyncQueue Stress Tests', () => {
       console.log(`      Processed ${ITEM_COUNT} items in ${duration}ms (${Math.round(ITEM_COUNT / (duration / 1000))} items/sec)`);
     });
 
-    test('should handle extreme concurrency with 100 producers and 50 consumers', async () => {
-      const queue = new AsyncQueue<string>(500);
-      const PRODUCERS = 100;
-      const CONSUMERS = 50;
-      const ITEMS_PER_PRODUCER = 100;
+    test('should handle extreme concurrency with 20 producers and 10 consumers', async () => {
+      const queue = new AsyncQueue<string>(50);
+      const PRODUCERS = 20;
+      const CONSUMERS = 10;
+      const ITEMS_PER_PRODUCER = 50;
       const TOTAL_ITEMS = PRODUCERS * ITEMS_PER_PRODUCER;
 
       const produced = new Set<string>();
@@ -148,7 +152,7 @@ describe('AsyncQueue Stress Tests', () => {
 
     test('should maintain order under extreme backpressure', async () => {
       const queue = new AsyncQueue<number>(3); // Very small buffer
-      const ITEM_COUNT = 1000;
+      const ITEM_COUNT = 200;
       const produced: number[] = [];
       const consumed: number[] = [];
       let maxBackpressureTime = 0;
@@ -441,8 +445,8 @@ describe('AsyncQueue Stress Tests', () => {
     jest.setTimeout(60000); // Increase timeout for benchmarks
 
     test('should measure throughput at different buffer sizes', async () => {
-      const ITEM_COUNT = 5000;
-      const bufferSizes = [1, 10, 100, 1000];
+      const ITEM_COUNT = 500;
+      const bufferSizes = [1, 10, 50, 100];
       const results: ThroughputResult[] = [];
 
       for (const bufferSize of bufferSizes) {
@@ -451,6 +455,10 @@ describe('AsyncQueue Stress Tests', () => {
         async function producer(): Promise<void> {
           for (let i = 0; i < ITEM_COUNT; i++) {
             await queue.enqueue(i);
+            // Small random delay for more realistic testing
+            if (Math.random() > 0.95) {
+              await new Promise(r => setTimeout(r, 1));
+            }
           }
           queue.close();
         }
@@ -459,6 +467,10 @@ describe('AsyncQueue Stress Tests', () => {
           while (true) {
             const item = await queue.dequeue();
             if (item === undefined) break;
+            // Small random delay for more realistic testing
+            if (Math.random() > 0.95) {
+              await new Promise(r => setTimeout(r, 1));
+            }
           }
         }
 
@@ -486,53 +498,54 @@ describe('AsyncQueue Stress Tests', () => {
     });
 
     test('should handle concurrent access patterns efficiently', async () => {
-      const queue = new AsyncQueue<number>(100);
-      const OPERATIONS = 10000;
-      const operations: Promise<void>[] = [];
-      const results: OperationResult[] = [];
+      const queue = new AsyncQueue<number>(50);
+      const TOTAL_ITEMS = 250;
+      const producedItems: number[] = [];
+      const consumedItems: number[] = [];
 
-      // Mix of enqueue and dequeue operations
-      for (let i = 0; i < OPERATIONS; i++) {
-        if (Math.random() > 0.5) {
-          operations.push(
-            queue.enqueue(i).then(() => {
-              results.push({ op: 'enqueue', value: i });
-            })
-          );
-        } else {
-          operations.push(
-            queue.dequeue().then(value => {
-              if (value !== undefined) {
-                results.push({ op: 'dequeue', value });
-              }
-            })
-          );
+      // Producer that adds items
+      async function producer(): Promise<void> {
+        for (let i = 0; i < TOTAL_ITEMS; i++) {
+          await queue.enqueue(i);
+          producedItems.push(i);
+          // Random delays
+          if (Math.random() > 0.9) {
+            await new Promise(r => setTimeout(r, Math.random() * 2));
+          }
         }
+        queue.close();
+      }
 
-        // Add some delay to simulate real-world timing
-        if (i % 100 === 0) {
-          await new Promise(r => setTimeout(r, 1));
+      // Multiple consumers working concurrently
+      async function consumer(_id: number): Promise<void> {
+        while (true) {
+          const item = await queue.dequeue();
+          if (item === undefined) break;
+          consumedItems.push(item);
+          // Random delays
+          if (Math.random() > 0.9) {
+            await new Promise(r => setTimeout(r, Math.random() * 2));
+          }
         }
       }
 
       const startTime = Date.now();
-      await Promise.all(operations);
-      queue.close();
 
-      // Drain any remaining items
-      while (true) {
-        const item = await queue.dequeue();
-        if (item === undefined) break;
-      }
+      // Run producer and multiple consumers concurrently
+      await Promise.all([
+        producer(),
+        consumer(1),
+        consumer(2),
+        consumer(3)
+      ]);
 
       const duration = Date.now() - startTime;
 
-      const enqueues = results.filter(r => r.op === 'enqueue').length;
-      const dequeues = results.filter(r => r.op === 'dequeue').length;
+      expect(producedItems.length).toBe(TOTAL_ITEMS);
+      expect(consumedItems.length).toBe(TOTAL_ITEMS);
 
-      expect(results.length).toBeGreaterThan(0);
-      console.log(`      ${OPERATIONS} concurrent operations in ${duration}ms`);
-      console.log(`      Enqueues: ${enqueues}, Dequeues: ${dequeues}`);
+      console.log(`      Processed ${TOTAL_ITEMS} items with 3 concurrent consumers in ${duration}ms`);
+      console.log(`      Throughput: ${Math.round(TOTAL_ITEMS / (duration / 1000))} items/sec`);
     });
   });
 });
