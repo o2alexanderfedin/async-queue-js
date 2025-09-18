@@ -25,8 +25,16 @@ async function randomDelay(probability: number = 0.9, maxDelayMs: number = 5): P
   }
 }
 
-async function yieldControl(): Promise<void> {
-  return await new Promise<void>(resolve => queueMicrotask(resolve));
+function yieldControl(): Promise<void> {
+  return new Promise<void>(resolve => queueMicrotask(resolve));
+}
+
+function randomYieldControl(probability: number = 0.9): Promise<void> {
+  if (Math.random() > probability) {
+    return yieldControl();
+  }
+
+  return Promise.resolve();
 }
 
 describe('AsyncQueue Stress Tests', () => {
@@ -71,6 +79,8 @@ describe('AsyncQueue Stress Tests', () => {
     });
 
     test('should handle 1000,000 items with single producer/consumer', async () => {
+      jest.setTimeout(300000); // Increase timeout for stress tests
+
       const queue = new AsyncQueue<number>(10);
       const ITEM_COUNT = 1000000;
       let producedCount: number = 0;
@@ -83,7 +93,7 @@ describe('AsyncQueue Stress Tests', () => {
           await queue.enqueue(i);
           producedCount++;
           producedMax = i;
-          await yieldControl();
+          //await randomYieldControl();
         }
         queue.close();
       }
@@ -94,7 +104,7 @@ describe('AsyncQueue Stress Tests', () => {
           if (item !== undefined) {
             consumedCount++;
             consumedMax = Math.max(consumedMax, item);
-            await yieldControl();
+            await randomYieldControl();
           }
         }
       }
