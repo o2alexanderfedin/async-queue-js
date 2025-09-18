@@ -1,0 +1,32 @@
+# Source files
+*.ts
+!*.d.ts
+
+# Development files
+test/
+examples/
+.git/
+.gitignore
+
+# CI/CD
+.github/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Dependencies
+node_modules/
+
+# Build artifacts
+*.tgz

@@ -1,10 +1,18 @@
 {
-  "name": "async-queue-js",
+  "name": "@alexanderfedin/async-queue",
   "version": "1.0.0",
-  "description": "JavaScript implementation of an async producer-consumer queue with backpressure control",
-  "main": "async-queue.js",
+  "description": "JavaScript async producer-consumer queue with backpressure control, similar to Go channels or .NET Channel<T>",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
   "scripts": {
-    "test": "node async-queue.test.js"
+    "test": "node test/index.test.js",
+    "example": "node examples/basic.js",
+    "example:backpressure": "node examples/backpressure.js",
+    "example:multi": "node examples/multiple-workers.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/o2alexanderfedin/async-queue-js.git"
   },
   "keywords": [
     "async",
@@ -13,8 +21,28 @@
     "producer-consumer",
     "channel",
     "concurrent",
-    "push-pull"
+    "push-pull",
+    "flow-control",
+    "promise",
+    "async-await",
+    "blocking-queue",
+    "bounded-queue"
   ],
-  "author": "",
-  "license": "MIT"
+  "author": "Alexander Fedin",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/o2alexanderfedin/async-queue-js/issues"
+  },
+  "homepage": "https://github.com/o2alexanderfedin/async-queue-js#readme",
+  "files": [
+    "lib/",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=12.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

@@ -1,4 +1,4 @@
-const AsyncQueue = require('./async-queue')
+const AsyncQueue = require('../lib/index')
 
 // Test utilities
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
