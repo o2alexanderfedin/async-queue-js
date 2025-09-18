@@ -1,10 +1,13 @@
 # Source files
+src/
 *.ts
-!*.d.ts
+!dist/*.d.ts
 
 # Development files
 test/
 examples/
+tsconfig.json
+jest.config.js
 .git/
 .gitignore
 

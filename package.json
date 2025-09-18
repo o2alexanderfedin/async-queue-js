@@ -1,18 +1,23 @@
 {
   "name": "@alexanderfedin/async-queue",
   "version": "1.0.0",
-  "description": "JavaScript async producer-consumer queue with backpressure control, similar to Go channels or .NET Channel<T>",
-  "main": "lib/index.js",
-  "types": "lib/index.d.ts",
+  "description": "TypeScript async producer-consumer queue with backpressure control, similar to Go channels or .NET Channel<T>",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "clean": "rm -rf dist coverage",
+    "prebuild": "npm run clean",
+    "prepublishOnly": "npm run build && npm test",
     "test": "jest --testPathIgnorePatterns=stress",
-    "test:stress": "jest test/async-queue.stress.test.js --verbose",
+    "test:stress": "jest test/*.stress.test.ts --verbose",
     "test:all": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "example": "node examples/basic.js",
-    "example:backpressure": "node examples/backpressure.js",
-    "example:multi": "node examples/multiple-workers.js"
+    "example": "ts-node examples/basic.ts",
+    "example:backpressure": "ts-node examples/backpressure.ts",
+    "example:multi": "ts-node examples/multiple-workers.ts"
   },
   "repository": {
     "type": "git",
@@ -39,7 +44,7 @@
   },
   "homepage": "https://github.com/o2alexanderfedin/async-queue-js#readme",
   "files": [
-    "lib/",
+    "dist/",
     "LICENSE",
     "README.md"
   ],
@@ -50,6 +55,11 @@
     "access": "public"
   },
   "devDependencies": {
-    "jest": "^29.7.0"
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.5.2",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.4.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2"
   }
 }

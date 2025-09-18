@@ -48,6 +48,9 @@ jspm_packages/
 # parcel-bundler cache
 .cache
 
+# TypeScript build output
+dist/
+
 # Mac
 .DS_Store
 
