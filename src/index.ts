@@ -21,8 +21,14 @@ export class AsyncQueue<T = any> {
   private head = 0;  // Index where we dequeue from
   private tail = 0;  // Index where we enqueue to
   private count = 0; // Number of items in queue
-  private readonly waitingConsumers: PromiseResolver[] = [];
-  private readonly waitingProducers: PromiseResolver[] = [];
+
+  // Waiting queues with reserved capacity - never shrink, only grow
+  private waitingConsumers: (PromiseResolver | undefined)[] = [];
+  private waitingConsumersCount = 0;
+  private waitingProducers: (PromiseResolver | undefined)[] = [];
+  private waitingProducersCount = 0;
+  private readonly INITIAL_WAITING_CAPACITY = 16;
+
   private closed = false;
 
   /**
@@ -38,6 +44,10 @@ export class AsyncQueue<T = any> {
     this.maxSize = maxSize;
     const bufferSize = 1 << (32 - Math.clz32(maxSize - 1));
     this.buffer = new Array(bufferSize);
+
+    // Pre-allocate initial capacity for waiting queues
+    this.waitingConsumers.length = this.INITIAL_WAITING_CAPACITY;
+    this.waitingProducers.length = this.INITIAL_WAITING_CAPACITY;
   }
 
   /**
@@ -63,6 +73,28 @@ export class AsyncQueue<T = any> {
   }
 
   /**
+   * Pushes a resolver onto a waiting queue with capacity management
+   */
+  private pushWaiter(queue: (PromiseResolver | undefined)[], count: number, resolver: PromiseResolver): number {
+    // Grow capacity if needed (double the size)
+    if (count >= queue.length) {
+      queue.length = queue.length * 2;
+    }
+    queue[count] = resolver;
+    return count + 1;
+  }
+
+  /**
+   * Pops a resolver from a waiting queue (LIFO)
+   */
+  private popWaiter(queue: (PromiseResolver | undefined)[], count: number): PromiseResolver | undefined {
+    if (count === 0) return undefined;
+    const resolver = queue[count - 1];
+    queue[count - 1] = undefined; // Help GC
+    return resolver;
+  }
+
+  /**
    * Adds an item to the queue. Blocks if the queue is full.
    * @param item The item to add to the queue
    * @returns A promise that resolves when the item has been added
@@ -79,7 +111,9 @@ export class AsyncQueue<T = any> {
     while (this.count >= this.maxSize && !this.closed) {
       // Create unresolved Promise, store only the resolve function
       // This suspends the producer until a consumer makes space
-      await new Promise<void>(resolve => this.waitingProducers.push(resolve));
+      await new Promise<void>(resolve => {
+        this.waitingProducersCount = this.pushWaiter(this.waitingProducers, this.waitingProducersCount, resolve);
+      });
 
       // Check again after waking - queue might have been closed while waiting
       if (this.closed) {
@@ -92,8 +126,9 @@ export class AsyncQueue<T = any> {
 
     // WAKE MECHANISM: If any consumer is waiting for an item, wake ONE
     // Uses LIFO (stack) for O(1) performance - order doesn't affect correctness
-    if (this.waitingConsumers.length > 0) {
-      const consumer = this.waitingConsumers.pop();
+    if (this.waitingConsumersCount > 0) {
+      const consumer = this.popWaiter(this.waitingConsumers, this.waitingConsumersCount);
+      this.waitingConsumersCount--;
       consumer?.(); // Calling resolve() wakes the awaiting consumer
     }
   }
@@ -108,7 +143,9 @@ export class AsyncQueue<T = any> {
     while (this.count === 0 && !this.closed) {
       // Create unresolved Promise, store only the resolve function
       // This suspends the consumer until a producer adds an item
-      await new Promise<void>(resolve => this.waitingConsumers.push(resolve));
+      await new Promise<void>(resolve => {
+        this.waitingConsumersCount = this.pushWaiter(this.waitingConsumers, this.waitingConsumersCount, resolve);
+      });
     }
 
     // After waking/looping, check if we exited due to close (not an item)
@@ -122,8 +159,9 @@ export class AsyncQueue<T = any> {
 
     // WAKE MECHANISM: If any producer is waiting for space, wake ONE
     // Uses LIFO (stack) for O(1) performance - order doesn't affect correctness
-    if (this.waitingProducers.length > 0) {
-      const producer = this.waitingProducers.pop();
+    if (this.waitingProducersCount > 0) {
+      const producer = this.popWaiter(this.waitingProducers, this.waitingProducersCount);
+      this.waitingProducersCount--;
       producer?.(); // Calling resolve() wakes the awaiting producer
     }
 
@@ -141,13 +179,19 @@ export class AsyncQueue<T = any> {
 
     // Wake ALL waiting consumers - they'll return undefined
     // This allows graceful shutdown where all consumers exit cleanly
-    this.waitingConsumers.forEach(resolve => resolve());
-    this.waitingConsumers.length = 0;
+    for (let i = 0; i < this.waitingConsumersCount; i++) {
+      this.waitingConsumers[i]?.();
+      this.waitingConsumers[i] = undefined; // Help GC
+    }
+    this.waitingConsumersCount = 0;
 
     // Wake ALL waiting producers - they'll throw an error
     // This prevents deadlock where producers wait forever
-    this.waitingProducers.forEach(resolve => resolve());
-    this.waitingProducers.length = 0;
+    for (let i = 0; i < this.waitingProducersCount; i++) {
+      this.waitingProducers[i]?.();
+      this.waitingProducers[i] = undefined; // Help GC
+    }
+    this.waitingProducersCount = 0;
   }
 
   /**
@@ -197,7 +241,7 @@ export class AsyncQueue<T = any> {
    * @returns The number of consumers waiting for items
    */
   get waitingConsumerCount(): number {
-    return this.waitingConsumers.length;
+    return this.waitingConsumersCount;
   }
 
   /**
@@ -205,7 +249,7 @@ export class AsyncQueue<T = any> {
    * @returns The number of producers waiting for space
    */
   get waitingProducerCount(): number {
-    return this.waitingProducers.length;
+    return this.waitingProducersCount;
   }
 }
 
