@@ -17,7 +17,10 @@
     "test:coverage": "jest --coverage",
     "example": "ts-node examples/basic.ts",
     "example:backpressure": "ts-node examples/backpressure.ts",
-    "example:multi": "ts-node examples/multiple-workers.ts"
+    "example:multi": "ts-node examples/multiple-workers.ts",
+    "benchmark": "ts-node benchmark/run-benchmark.ts",
+    "benchmark:compare": "ts-node benchmark/compare-implementations.ts",
+    "benchmark:native": "ts-node benchmark/compare-native.ts"
   },
   "repository": {
     "type": "git",
