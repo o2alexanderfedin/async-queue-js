@@ -11,7 +11,7 @@
     "prebuild": "npm run clean",
     "prepublishOnly": "npm run build && npm test",
     "test": "jest --testPathIgnorePatterns=stress",
-    "test:stress": "jest test/*.stress.test.ts --verbose --testTimeout=60000",
+    "test:stress": "jest --testNamePattern=\"stress\" --verbose --testTimeout=60000",
     "test:all": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
