@@ -73,6 +73,7 @@
     "access": "public"
   },
   "devDependencies": {
+    "@playwright/mcp": "^0.0.38",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.5.2",
     "jest": "^29.7.0",
