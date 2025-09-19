@@ -108,6 +108,43 @@ for (let i = 0; i < 2; i++) {
 }
 ```
 
+### Async Iterator Pattern
+
+```typescript
+const queue = new AsyncQueue<string>();
+
+// Producer
+setTimeout(async () => {
+  for (const item of ['hello', 'async', 'world']) {
+    await queue.enqueue(item);
+  }
+  queue.close();
+}, 0);
+
+// Consumer using for-await-of
+for await (const item of queue) {
+  console.log(item); // hello, async, world
+}
+```
+
+### Stream Processing Pipeline
+
+```typescript
+const queue = new AsyncQueue<number>();
+
+// Transform pipeline
+async function* double(source: AsyncIterable<number>) {
+  for await (const item of source) {
+    yield item * 2;
+  }
+}
+
+// Process items through pipeline
+for await (const result of double(queue)) {
+  console.log(result);
+}
+```
+
 ## API
 
 ### `new AsyncQueue<T>(maxSize = 1)`
@@ -138,7 +175,22 @@ Get current number of items in the queue.
 Get number of producers waiting to enqueue.
 
 ### `get waitingConsumerCount(): number`
-Get number of consumers waiting to dequeue
+Get number of consumers waiting to dequeue.
+
+### `[Symbol.asyncIterator](): AsyncIterator<T>`
+Returns an async iterator for use with `for-await-of` loops.
+
+### `iterate(): AsyncIterable<T>`
+Creates an async iterable for consuming queue items.
+
+### `toAsyncGenerator(): AsyncGenerator<T>`
+Converts the queue to an async generator for pipeline transformations.
+
+### `async drain(): Promise<T[]>`
+Drains all items from the queue into an array.
+
+### `async take(n: number): Promise<T[]>`
+Takes up to n items from the queue
 
 ## 🎯 Key Optimizations
 

@@ -251,6 +251,143 @@ export class AsyncQueue<T = any> {
   get waitingProducerCount(): number {
     return this.waitingProducersCount;
   }
+
+  /**
+   * Returns an async iterator for consuming items from the queue.
+   * Allows the queue to be used with for-await-of loops.
+   * The iterator will complete when the queue is closed and empty.
+   *
+   * @example
+   * ```typescript
+   * const queue = new AsyncQueue<number>();
+   *
+   * // Producer
+   * setTimeout(async () => {
+   *   for (let i = 0; i < 5; i++) {
+   *     await queue.enqueue(i);
+   *   }
+   *   queue.close();
+   * }, 0);
+   *
+   * // Consumer using async iterator
+   * for await (const item of queue) {
+   *   console.log(item); // 0, 1, 2, 3, 4
+   * }
+   * ```
+   */
+  async *[Symbol.asyncIterator](): AsyncIterator<T> {
+    while (true) {
+      const item = await this.dequeue();
+      if (item === undefined) {
+        // dequeue returns undefined only when queue is closed and empty
+        break;
+      }
+      yield item;
+    }
+  }
+
+  /**
+   * Creates an async iterable that consumes items from the queue.
+   * This is an alternative way to get an async iterator.
+   *
+   * @returns An async iterable for consuming queue items
+   * @example
+   * ```typescript
+   * const queue = new AsyncQueue<string>();
+   * const iterator = queue.iterate();
+   *
+   * for await (const item of iterator) {
+   *   console.log(item);
+   * }
+   * ```
+   */
+  iterate(): AsyncIterable<T> {
+    return {
+      [Symbol.asyncIterator]: () => this[Symbol.asyncIterator]()
+    };
+  }
+
+  /**
+   * Converts the queue to an async generator.
+   * Useful for transformation pipelines.
+   *
+   * @returns An async generator that yields items from the queue
+   * @example
+   * ```typescript
+   * const queue = new AsyncQueue<number>();
+   * const generator = queue.toAsyncGenerator();
+   *
+   * // Transform items
+   * async function* double(source: AsyncGenerator<number>) {
+   *   for await (const item of source) {
+   *     yield item * 2;
+   *   }
+   * }
+   *
+   * for await (const item of double(generator)) {
+   *   console.log(item);
+   * }
+   * ```
+   */
+  async *toAsyncGenerator(): AsyncGenerator<T> {
+    yield* this;
+  }
+
+  /**
+   * Drains all items from the queue into an array.
+   * Waits until the queue is closed and returns all items.
+   *
+   * @returns A promise that resolves to an array of all items
+   * @example
+   * ```typescript
+   * const queue = new AsyncQueue<number>();
+   *
+   * // Producer
+   * (async () => {
+   *   for (let i = 0; i < 5; i++) {
+   *     await queue.enqueue(i);
+   *   }
+   *   queue.close();
+   * })();
+   *
+   * const items = await queue.drain();
+   * console.log(items); // [0, 1, 2, 3, 4]
+   * ```
+   */
+  async drain(): Promise<T[]> {
+    const items: T[] = [];
+    for await (const item of this) {
+      items.push(item);
+    }
+    return items;
+  }
+
+  /**
+   * Takes up to n items from the queue.
+   * Returns early if the queue is closed before n items are received.
+   *
+   * @param n The maximum number of items to take
+   * @returns A promise that resolves to an array of items
+   * @example
+   * ```typescript
+   * const queue = new AsyncQueue<number>();
+   *
+   * // Take first 3 items
+   * const items = await queue.take(3);
+   * ```
+   */
+  async take(n: number): Promise<T[]> {
+    const items: T[] = [];
+    for (let i = 0; i < n && !this.isClosed; i++) {
+      const item = await this.dequeue();
+      if (item !== undefined) {
+        items.push(item);
+      } else {
+        break;
+      }
+    }
+    return items;
+  }
 }
 
 // Default export for CommonJS compatibility

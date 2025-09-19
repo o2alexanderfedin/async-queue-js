@@ -18,6 +18,7 @@
     "example": "ts-node examples/basic.ts",
     "example:backpressure": "ts-node examples/backpressure.ts",
     "example:multi": "ts-node examples/multiple-workers.ts",
+    "example:iterator": "ts-node examples/async-iterator.ts",
     "benchmark": "ts-node benchmark/src/throughput.ts",
     "benchmark:compare": "ts-node benchmark/src/compare-implementations.ts",
     "benchmark:native": "ts-node benchmark/src/compare-native.ts",
