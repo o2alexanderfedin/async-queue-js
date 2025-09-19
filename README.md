@@ -9,6 +9,18 @@ A blazing-fast TypeScript implementation of an async producer-consumer queue wit
 [![npm version](https://badge.fury.io/js/%40alexanderfedin%2Fasync-queue.svg)](https://www.npmjs.com/package/@alexanderfedin/async-queue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
+[![Test Report](https://img.shields.io/badge/Tests-57%20passing-brightgreen)](https://o2alexanderfedin.github.io/async-queue-js/test-report.html)
+[![Coverage](https://img.shields.io/badge/Coverage-91.3%25-brightgreen)](https://o2alexanderfedin.github.io/async-queue-js/coverage/)
+[![Benchmark](https://img.shields.io/badge/Performance-647K%20ops%2Fsec-blue)](https://o2alexanderfedin.github.io/async-queue-js/benchmark-report.html)
+
+## 📊 Live Reports
+
+View our comprehensive test, coverage, and performance reports:
+
+- 🧪 **[Test Report](https://o2alexanderfedin.github.io/async-queue-js/test-report.html)** - 57 tests passing with detailed execution results
+- 📈 **[Coverage Report](https://o2alexanderfedin.github.io/async-queue-js/coverage/)** - Interactive code coverage at 91.3%
+- ⚡ **[Benchmark Report](https://o2alexanderfedin.github.io/async-queue-js/benchmark-report.html)** - Performance metrics and comparisons
+- 📝 **[All Reports Dashboard](https://o2alexanderfedin.github.io/async-queue-js/)** - Central hub for all project metrics
 
 ## ⚡ Performance
 
