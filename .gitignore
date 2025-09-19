@@ -62,3 +62,7 @@ dist/
 
 # MCP Configuration
 .mcp.json
+
+# Generated reports (deployed to GitHub Pages)
+reports/
+*.html

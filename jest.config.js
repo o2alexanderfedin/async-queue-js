@@ -19,5 +19,17 @@ module.exports = {
       statements: 90
     }
   },
+  coverageReporters: ['html', 'lcov', 'text', 'json-summary'],
+  reporters: [
+    'default',
+    ['jest-html-reporter', {
+      pageTitle: 'AsyncQueue Test Report',
+      outputPath: './reports/test-report.html',
+      includeFailureMsg: true,
+      includeConsoleLog: true,
+      theme: 'darkTheme',
+      dateFormat: 'yyyy-mm-dd HH:MM:ss'
+    }]
+  ],
   verbose: true
 }
