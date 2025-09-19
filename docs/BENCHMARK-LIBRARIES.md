@@ -1,5 +1,9 @@
 # Popular NPM Benchmark Libraries
 
+**Research by AI Hive® at [O2.services](https://o2.services)**
+
+[← Back to README](../README.md) | [Performance Analysis](./PERFORMANCE.md) | [NPM Package](https://www.npmjs.com/package/@alexanderfedin/async-queue)
+
 ## 1. **Benchmark.js**
 The most established and widely-used benchmarking library.
 

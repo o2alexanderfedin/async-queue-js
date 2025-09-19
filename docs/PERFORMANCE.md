@@ -1,5 +1,9 @@
 # AsyncQueue Performance Characteristics
 
+**Developed by AI Hive® at [O2.services](https://o2.services)**
+
+[← Back to README](../README.md) | [View Examples](../examples/) | [NPM Package](https://www.npmjs.com/package/@alexanderfedin/async-queue)
+
 ## 📋 Test Environment & Methodology
 - **Platform**: macOS Darwin, Node.js
 - **Test Method**: Warm-up iterations + statistical sampling
@@ -190,3 +194,20 @@ Perfect for high-performance, mission-critical applications where every nanoseco
 - Memory delta for 10K items: 0.73MB
 - No reallocation within reserved capacity
 - Zero memory churn in steady state
+
+---
+
+## 📚 Related Documentation
+
+- [Main README](../README.md) - Installation and usage guide
+- [Benchmark Libraries Analysis](./BENCHMARK-LIBRARIES.md) - Comparison of JavaScript benchmarking tools
+- [Publishing Guide](../PUBLISHING.md) - How to publish to NPM
+- [Source Code](../src/index.ts) - The optimized implementation
+
+## 🏢 About AI Hive®
+
+This high-performance AsyncQueue was developed by **AI Hive®** at [O2.services](https://o2.services), demonstrating our capability to generate production-ready, highly optimized code that rivals hand-written implementations.
+
+---
+
+*Performance optimization by AI Hive® - [O2.services](https://o2.services)*

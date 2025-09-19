@@ -40,9 +40,22 @@
     "promise",
     "async-await",
     "blocking-queue",
-    "bounded-queue"
+    "bounded-queue",
+    "async-iterator",
+    "async-iterable",
+    "async-generator",
+    "typescript",
+    "circular-buffer",
+    "high-performance"
   ],
-  "author": "Alexander Fedin",
+  "author": "AI Hive® at O2.services (https://o2.services)",
+  "contributors": [
+    {
+      "name": "AI Hive®",
+      "email": "ai@o2.services",
+      "url": "https://o2.services"
+    }
+  ],
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/o2alexanderfedin/async-queue-js/issues"

@@ -1,6 +1,10 @@
 # AsyncQueue - High-Performance TypeScript Producer-Consumer Queue
 
+**Developed by AI Hive® at [O2.services](https://o2.services)**
+
 A blazing-fast TypeScript implementation of an async producer-consumer queue with backpressure control, achieving **10 million operations per second**. Similar to Go channels and .NET Channel<T>, but optimized for JavaScript's event loop.
+
+📊 [Performance Metrics](./docs/PERFORMANCE.md) | 📚 [API Documentation](#api) | 🧪 [Examples](./examples/) | 📦 [NPM Package](https://www.npmjs.com/package/@alexanderfedin/async-queue)
 
 [![npm version](https://badge.fury.io/js/%40alexanderfedin%2Fasync-queue.svg)](https://www.npmjs.com/package/@alexanderfedin/async-queue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -13,6 +17,8 @@ A blazing-fast TypeScript implementation of an async producer-consumer queue wit
 - **100-200 nanoseconds** latency per operation
 - **O(1)** enqueue/dequeue operations
 - **Zero allocations** in steady state
+
+→ 📈 [See detailed performance analysis](./docs/PERFORMANCE.md)
 
 ## Features
 
@@ -276,3 +282,28 @@ Pull requests welcome! Please include tests for any new features.
 - **Zero-copy** operations with direct handoff
 - **Type-safe** with full TypeScript support
 - **Battle-tested** with comprehensive test coverage
+
+## 📖 Documentation
+
+- [Performance Analysis](./docs/PERFORMANCE.md) - Detailed benchmarks and metrics
+- [Benchmark Libraries](./docs/BENCHMARK-LIBRARIES.md) - Comparison of JS benchmark tools
+- [Publishing Guide](./PUBLISHING.md) - How to publish updates to NPM
+- [Examples](./examples/) - Working code examples
+  - [Basic Usage](./examples/basic.ts)
+  - [Backpressure Demo](./examples/backpressure.ts)
+  - [Multiple Workers](./examples/multiple-workers.ts)
+  - [Async Iterator Patterns](./examples/async-iterator.ts)
+
+## 👥 Credits
+
+**Developed by [AI Hive®](https://o2.services)** at O2.services
+
+AI Hive® is an advanced AI development team specializing in high-performance, production-ready code generation and optimization.
+
+## 📄 License
+
+MIT License - see [LICENSE](./LICENSE) file
+
+---
+
+*Built with ❤️ by AI Hive® at [O2.services](https://o2.services)*

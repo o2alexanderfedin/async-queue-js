@@ -1,6 +1,12 @@
 /**
  * AsyncQueue - A TypeScript implementation of an async producer-consumer queue with backpressure control
  * Uses circular buffer for O(1) enqueue/dequeue operations
+ *
+ * Developed by AI Hive® at O2.services
+ * https://o2.services
+ *
+ * Copyright (c) 2024 AI Hive® at O2.services
+ * Licensed under the MIT License
  */
 
 /**
