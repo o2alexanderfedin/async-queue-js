@@ -91,9 +91,9 @@ export class AsyncQueue<T = any> {
     this.addToBuffer(item);
 
     // WAKE MECHANISM: If any consumer is waiting for an item, wake ONE
-    // This ensures FIFO ordering - first waiting consumer gets the item
+    // Uses LIFO (stack) for O(1) performance - order doesn't affect correctness
     if (this.waitingConsumers.length > 0) {
-      const consumer = this.waitingConsumers.shift();
+      const consumer = this.waitingConsumers.pop();
       consumer?.(); // Calling resolve() wakes the awaiting consumer
     }
   }
@@ -121,9 +121,9 @@ export class AsyncQueue<T = any> {
     const item = this.removeFromBuffer();
 
     // WAKE MECHANISM: If any producer is waiting for space, wake ONE
-    // This allows the blocked producer to add its item
+    // Uses LIFO (stack) for O(1) performance - order doesn't affect correctness
     if (this.waitingProducers.length > 0) {
-      const producer = this.waitingProducers.shift();
+      const producer = this.waitingProducers.pop();
       producer?.(); // Calling resolve() wakes the awaiting producer
     }
 
