@@ -277,6 +277,47 @@ describe('AsyncQueue Iterator', () => {
       expect(items).toEqual([]);
     });
 
+    test('should stop taking when queue becomes empty after close', async () => {
+      const queue = new AsyncQueue<number>(5);
+
+      // Add items
+      await queue.enqueue(1);
+      await queue.enqueue(2);
+      await queue.enqueue(3);
+
+      // Close the queue - existing items can still be consumed
+      queue.close();
+
+      // Request more items than available
+      // This should trigger the `break` on line 392 when dequeue returns undefined
+      // after consuming all available items from the closed queue
+      const items = await queue.take(10);
+      expect(items).toEqual([1, 2, 3]);
+      expect(items.length).toBe(3); // Got fewer than requested because queue closed and emptied
+      expect(queue.isClosed).toBe(true);
+    });
+
+    test('should stop taking when queue closes during take operation', async () => {
+      const queue = new AsyncQueue<number>(5);
+
+      // Add some items
+      await queue.enqueue(1);
+      await queue.enqueue(2);
+
+      // Start a take operation that requests more items than available
+      const takePromise = queue.take(5);
+
+      // Close the queue during the take operation
+      setTimeout(() => {
+        queue.close();
+      }, 10);
+
+      // The take should stop due to queue closing (testing the !this.isClosed branch)
+      const items = await takePromise;
+      expect(items).toEqual([1, 2]);
+      expect(queue.isClosed).toBe(true);
+    });
+
     test('should work with concurrent producers', async () => {
       const queue = new AsyncQueue<number>(2);
 
