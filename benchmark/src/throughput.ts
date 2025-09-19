@@ -3,7 +3,7 @@
  * This implements the core Benchmark.js patterns without the dependency
  */
 
-import { AsyncQueue } from '../src/index';
+import { AsyncQueue } from '../../src/index';
 
 interface BenchmarkResult {
   name: string;

@@ -18,9 +18,10 @@
     "example": "ts-node examples/basic.ts",
     "example:backpressure": "ts-node examples/backpressure.ts",
     "example:multi": "ts-node examples/multiple-workers.ts",
-    "benchmark": "ts-node benchmark/run-benchmark.ts",
-    "benchmark:compare": "ts-node benchmark/compare-implementations.ts",
-    "benchmark:native": "ts-node benchmark/compare-native.ts"
+    "benchmark": "ts-node benchmark/src/throughput.ts",
+    "benchmark:compare": "ts-node benchmark/src/compare-implementations.ts",
+    "benchmark:native": "ts-node benchmark/src/compare-native.ts",
+    "benchmark:test": "jest benchmark/test/*.test.ts"
   },
   "repository": {
     "type": "git",

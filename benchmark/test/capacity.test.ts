@@ -1,4 +1,4 @@
-import { AsyncQueue } from '../src/index';
+import { AsyncQueue } from '../../src/index';
 
 describe('Reserved Capacity Benchmark', () => {
   test('should demonstrate capacity growth pattern', async () => {

@@ -1,4 +1,4 @@
-import { AsyncQueue } from '../src/index';
+import { AsyncQueue } from '../../src/index';
 
 describe('Stack Optimization Benchmark', () => {
   test('should show performance with many waiting consumers/producers', async () => {

@@ -3,7 +3,7 @@
  * No external dependencies required
  */
 
-import { AsyncQueue } from '../src/index';
+import { AsyncQueue } from '../../src/index';
 import { EventEmitter } from 'events';
 
 interface BenchmarkResult {
@@ -139,7 +139,6 @@ class EventEmitterQueue<T> {
  */
 class PromiseQueue<T> {
   private resolvers: ((value: T) => void)[] = [];
-  private promises: Promise<T>[] = [];
   private values: T[] = [];
   private maxSize: number;
 
@@ -253,9 +252,7 @@ async function runBenchmarks() {
   });
 
   // Test concurrent operations
-  console.log('\n--- Concurrent Producer/Consumer (1000 items) ---\n');
-
-  const ITEMS = 1000;
+  console.log('\n--- Concurrent Producer/Consumer ---\n');
 
   await bench.run('AsyncQueue Concurrent', async () => {
     const queue = new AsyncQueue<number>(10);

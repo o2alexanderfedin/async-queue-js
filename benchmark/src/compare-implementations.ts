@@ -3,7 +3,7 @@
  * for producer-consumer patterns
  */
 
-import { AsyncQueue } from '../src/index';
+import { AsyncQueue } from '../../src/index';
 import { EventEmitter } from 'events';
 import { Subject, BehaviorSubject, ReplaySubject } from 'rxjs';
 import { bufferCount, take } from 'rxjs/operators';
