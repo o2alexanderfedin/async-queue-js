@@ -70,9 +70,7 @@ jobs:
       run: npm run build
 
     - name: Run benchmarks
-      run: |
-        npm run benchmark
-        npm run benchmark:compare
+      run: npm run benchmark
       timeout-minutes: 10
 
     - name: Store benchmark results
