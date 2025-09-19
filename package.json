@@ -1,6 +1,6 @@
 {
   "name": "@alexanderfedin/async-queue",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "TypeScript async producer-consumer queue with backpressure control, similar to Go channels or .NET Channel<T>",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
