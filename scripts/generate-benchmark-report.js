@@ -2,6 +2,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const { execSync } = require('child_process');
 
 // Ensure reports directory exists
 const reportsDir = path.join(__dirname, '..', 'reports');
@@ -9,8 +11,85 @@ if (!fs.existsSync(reportsDir)) {
   fs.mkdirSync(reportsDir, { recursive: true });
 }
 
+// Function to collect system information
+function getSystemInfo() {
+  const cpuInfo = os.cpus()[0];
+  const totalMem = (os.totalmem() / (1024 * 1024 * 1024)).toFixed(1);
+  const platform = os.platform();
+  const arch = os.arch();
+  const nodeVersion = process.version;
+  const cpuCores = os.cpus().length;
+
+  // Try to get more detailed CPU info
+  let cpuModel = cpuInfo ? cpuInfo.model : 'Unknown';
+  let cpuSpeed = cpuInfo ? (cpuInfo.speed / 1000).toFixed(2) : 'Unknown';
+
+  // Get additional info based on platform
+  let additionalInfo = {};
+  try {
+    if (platform === 'linux') {
+      // On Linux (GitHub Actions), try to get more details
+      try {
+        const cpuinfo = execSync('cat /proc/cpuinfo | grep "model name" | head -1', { encoding: 'utf8' });
+        const modelMatch = cpuinfo.match(/model name\s*:\s*(.+)/);
+        if (modelMatch) cpuModel = modelMatch[1].trim();
+      } catch {}
+
+      try {
+        const meminfo = execSync('cat /proc/meminfo | grep MemTotal', { encoding: 'utf8' });
+        const memMatch = meminfo.match(/MemTotal:\s+(\d+)/);
+        if (memMatch) {
+          additionalInfo.totalMemKB = parseInt(memMatch[1]);
+        }
+      } catch {}
+
+      // Try to get virtualization info
+      try {
+        const virt = execSync('systemd-detect-virt 2>/dev/null || echo "bare-metal"', { encoding: 'utf8' }).trim();
+        additionalInfo.virtualization = virt;
+      } catch {}
+    } else if (platform === 'darwin') {
+      // On macOS, try to get more details
+      try {
+        const sysctl = execSync('sysctl -n machdep.cpu.brand_string', { encoding: 'utf8' }).trim();
+        if (sysctl) cpuModel = sysctl;
+      } catch {}
+    } else if (platform === 'win32') {
+      // On Windows, try to get more details
+      try {
+        const wmicCpu = execSync('wmic cpu get name /value', { encoding: 'utf8' });
+        const cpuMatch = wmicCpu.match(/Name=(.+)/);
+        if (cpuMatch) cpuModel = cpuMatch[1].trim();
+      } catch {}
+    }
+  } catch (e) {
+    // Silently ignore errors from system info collection
+  }
+
+  // Check if running in CI environment
+  const isCI = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
+  const runnerName = process.env.RUNNER_NAME || 'Local Machine';
+  const runnerOS = process.env.RUNNER_OS || platform;
+
+  return {
+    platform: platform.charAt(0).toUpperCase() + platform.slice(1),
+    arch,
+    nodeVersion,
+    cpuModel,
+    cpuCores,
+    cpuSpeed,
+    totalMem,
+    hostname: isCI ? runnerName : os.hostname(),
+    osRelease: os.release(),
+    isCI,
+    runnerOS: isCI ? runnerOS : null,
+    ...additionalInfo
+  };
+}
+
 // Function to generate HTML report
 function generateBenchmarkHTML(results) {
+  const systemInfo = getSystemInfo();
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -242,13 +321,48 @@ function generateBenchmarkHTML(results) {
                     <td>Warm-up Cycles</td>
                     <td>${results.config?.warmup || '10'}</td>
                 </tr>
+            </table>
+        </div>
+
+        <div class="chart-container">
+            <h3>Machine Specifications</h3>
+            <table>
+                <tr>
+                    <td>Environment</td>
+                    <td>${systemInfo.isCI ? '🤖 CI/CD Runner' : '💻 Local Machine'}</td>
+                </tr>
+                <tr>
+                    <td>CPU Model</td>
+                    <td>${systemInfo.cpuModel}</td>
+                </tr>
+                <tr>
+                    <td>CPU Cores</td>
+                    <td>${systemInfo.cpuCores} cores @ ${systemInfo.cpuSpeed} GHz</td>
+                </tr>
+                <tr>
+                    <td>Total Memory</td>
+                    <td>${systemInfo.totalMem} GB</td>
+                </tr>
                 <tr>
                     <td>Platform</td>
-                    <td>${process.platform} (${process.arch})</td>
+                    <td>${systemInfo.platform} (${systemInfo.arch})</td>
+                </tr>
+                <tr>
+                    <td>OS Release</td>
+                    <td>${systemInfo.osRelease}</td>
                 </tr>
                 <tr>
                     <td>Node Version</td>
-                    <td>${process.version}</td>
+                    <td>${systemInfo.nodeVersion}</td>
+                </tr>
+                ${systemInfo.virtualization ? `
+                <tr>
+                    <td>Virtualization</td>
+                    <td>${systemInfo.virtualization}</td>
+                </tr>` : ''}
+                <tr>
+                    <td>Host</td>
+                    <td>${systemInfo.hostname}</td>
                 </tr>
             </table>
         </div>

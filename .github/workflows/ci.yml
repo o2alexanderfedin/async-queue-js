@@ -75,7 +75,14 @@ jobs:
       run: npm run build
 
     - name: Run benchmarks
-      run: npm run benchmark
+      run: |
+        echo "Running benchmarks on GitHub Actions runner..."
+        echo "CPU Info:"
+        lscpu 2>/dev/null || sysctl -a | grep machdep.cpu 2>/dev/null || echo "CPU info not available"
+        echo "Memory Info:"
+        free -h 2>/dev/null || vm_stat 2>/dev/null || echo "Memory info not available"
+        echo ""
+        npm run benchmark
       timeout-minutes: 10
 
     - name: Store benchmark results
