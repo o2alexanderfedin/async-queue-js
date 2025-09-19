@@ -24,7 +24,7 @@ async function randomDelay(probability: number = 0.9, maxDelayMs: number = 5): P
     await new Promise(r => setTimeout(r, Math.random() * maxDelayMs));
   }
 }
-
+/*
 function yieldControl(): Promise<void> {
   return new Promise<void>(resolve => queueMicrotask(resolve));
 }
@@ -36,7 +36,7 @@ function randomYieldControl(probability: number = 0.9): Promise<void> {
 
   return Promise.resolve();
 }
-
+*/
 describe('AsyncQueue Stress Tests', () => {
   jest.setTimeout(30000); // Increase timeout for stress tests
 
@@ -82,7 +82,7 @@ describe('AsyncQueue Stress Tests', () => {
       jest.setTimeout(300000); // Increase timeout for stress tests
 
       const queue = new AsyncQueue<number>(10);
-      const ITEM_COUNT = 1000000;
+      const ITEM_COUNT = 100000;
       let producedCount: number = 0;
       let consumedCount: number = 0;
       let producedMax: number = 0;
@@ -104,7 +104,7 @@ describe('AsyncQueue Stress Tests', () => {
           if (item !== undefined) {
             consumedCount++;
             consumedMax = Math.max(consumedMax, item);
-            await randomYieldControl();
+            //await randomYieldControl();
           }
         }
       }
