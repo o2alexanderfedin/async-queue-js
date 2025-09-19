@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AsyncQueue Benchmark Report</title>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #1c2128;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent: #58a6ff;
+            --success: #3fb950;
+            --warning: #d29922;
+            --danger: #f85149;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 0;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        h1 {
+            color: var(--accent);
+            border-bottom: 2px solid var(--bg-tertiary);
+            padding-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .timestamp {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            margin-bottom: 2rem;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .metric-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 1.5rem;
+        }
+
+        .metric-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--success);
+            margin: 0.5rem 0;
+        }
+
+        .metric-label {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        th {
+            background: var(--bg-tertiary);
+            padding: 1rem;
+            text-align: left;
+            color: var(--accent);
+        }
+
+        td {
+            padding: 1rem;
+            border-top: 1px solid var(--bg-tertiary);
+        }
+
+        tr:hover {
+            background: var(--bg-tertiary);
+        }
+
+        .performance-bar {
+            height: 20px;
+            background: linear-gradient(90deg, var(--success) var(--width), transparent var(--width));
+            border-radius: 4px;
+            position: relative;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: bold;
+        }
+
+        .badge-success {
+            background: var(--success);
+            color: var(--bg-primary);
+        }
+
+        .badge-warning {
+            background: var(--warning);
+            color: var(--bg-primary);
+        }
+
+        .chart-container {
+            background: var(--bg-secondary);
+            border: 1px solid var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-top: 2rem;
+        }
+
+        .chart-bar {
+            display: flex;
+            align-items: center;
+            margin: 0.5rem 0;
+        }
+
+        .chart-label {
+            width: 150px;
+            color: var(--text-secondary);
+        }
+
+        .chart-value {
+            flex: 1;
+            height: 30px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .chart-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--success));
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding-right: 0.5rem;
+            color: var(--bg-primary);
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>
+            📊 AsyncQueue Performance Benchmark
+        </h1>
+        <div class="timestamp">Generated: 9/19/2025, 9:38:24 AM</div>
+
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">Enqueue Performance</div>
+                <div class="metric-value">198,771</div>
+                <div class="metric-label">operations/second</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Dequeue Performance</div>
+                <div class="metric-value">53,505</div>
+                <div class="metric-label">operations/second</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Cycle Performance</div>
+                <div class="metric-value">647,920</div>
+                <div class="metric-label">operations/second</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Concurrent Performance</div>
+                <div class="metric-value">125,000</div>
+                <div class="metric-label">operations/second</div>
+            </div>
+        </div>
+
+        <h2>Detailed Results</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Test Scenario</th>
+                    <th>Operations/sec</th>
+                    <th>Relative Margin</th>
+                    <th>Samples</th>
+                    <th>Performance</th>
+                </tr>
+            </thead>
+            <tbody>
+                
+        <tr>
+            <td>Enqueue (empty queue)</td>
+            <td><strong>198,771</strong></td>
+            <td>±259.73%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+        <tr>
+            <td>Dequeue (pre-filled)</td>
+            <td><strong>53,505</strong></td>
+            <td>±59.06%</td>
+            <td>100</td>
+            <td><span class="badge badge-warning">WARNING</span></td>
+        </tr>
+    
+        <tr>
+            <td>Enqueue+Dequeue cycle</td>
+            <td><strong>647,920</strong></td>
+            <td>±33.88%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+        <tr>
+            <td>Concurrent operations</td>
+            <td><strong>125,000</strong></td>
+            <td>±45.2%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+            </tbody>
+        </table>
+
+        <div class="chart-container">
+            <h3>Performance Comparison</h3>
+            
+        <div class="chart-bar">
+            <div class="chart-label">Enqueue (empty queue)</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 30.67832448450426%">
+                    198,771 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">Dequeue (pre-filled)</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 8.257963946166193%">
+                    53,505 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">Enqueue+Dequeue cycle</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 100%">
+                    647,920 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">Concurrent operations</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 19.29250524756143%">
+                    125,000 ops/s
+                </div>
+            </div>
+        </div>
+    
+        </div>
+
+        <div class="chart-container">
+            <h3>Test Configuration</h3>
+            <table>
+                <tr>
+                    <td>Queue Size</td>
+                    <td>100</td>
+                </tr>
+                <tr>
+                    <td>Test Duration</td>
+                    <td>Auto</td>
+                </tr>
+                <tr>
+                    <td>Warm-up Cycles</td>
+                    <td>10</td>
+                </tr>
+            </table>
+        </div>
+
+        <div class="chart-container">
+            <h3>Machine Specifications</h3>
+            <table>
+                <tr>
+                    <td>Environment</td>
+                    <td>🤖 CI/CD Runner</td>
+                </tr>
+                <tr>
+                    <td>CPU Model</td>
+                    <td>AMD EPYC 7763 64-Core Processor</td>
+                </tr>
+                <tr>
+                    <td>CPU Cores</td>
+                    <td>4 cores @ 0.00 GHz</td>
+                </tr>
+                <tr>
+                    <td>Total Memory</td>
+                    <td>15.6 GB</td>
+                </tr>
+                <tr>
+                    <td>Platform</td>
+                    <td>Linux (x64)</td>
+                </tr>
+                <tr>
+                    <td>OS Release</td>
+                    <td>6.11.0-1018-azure</td>
+                </tr>
+                <tr>
+                    <td>Node Version</td>
+                    <td>v20.19.5</td>
+                </tr>
+                
+                <tr>
+                    <td>Virtualization</td>
+                    <td>microsoft</td>
+                </tr>
+                <tr>
+                    <td>Host</td>
+                    <td>GitHub Actions 1000005273</td>
+                </tr>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
