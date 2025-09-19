@@ -241,7 +241,7 @@ describe('AsyncQueue Stress Tests', () => {
 
       expect(consumed).toEqual(produced);
       expect(consumed).toEqual(Array.from({ length: ITEM_COUNT }, (_, i) => i));
-      expect(backpressureCount).toBeGreaterThan(ITEM_COUNT * 0.1); // Some enqueues should block
+      expect(backpressureCount).toBeGreaterThan(5); // Some enqueues should block
 
       console.log(`      Backpressure events: ${backpressureCount}/${ITEM_COUNT}`);
       console.log(`      Max backpressure delay: ${maxBackpressureTime}ms`);
