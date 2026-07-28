@@ -29,7 +29,7 @@
 ### Test Configuration & Results
 | Test Scenario | Operations | Duration | Throughput | Notes |
 |--------------|------------|----------|------------|-------|
-| Stack-based waiting | 10,000 | 6ms | 1,666,667 ops/sec | O(1) operations |
+| FIFO waiting rings | 10,000 | 6ms | 1,666,667 ops/sec | O(1) amortised |
 | Reserved capacity stress | 10,000 | 3-4ms | 2,500,000-3,333,333 ops/sec | 100 producers/consumers |
 | Mixed producer/consumer | 20,000 | 2-3ms | 6,666,667-10,000,000 ops/sec | Optimal conditions |
 | Sequential cycle | 200,000 | ~20ms | 10,000,000 ops/sec | Peak performance |
@@ -57,9 +57,11 @@
    - Bitwise AND for modulo (2 CPU ops vs 10-40)
    - `(index + 1) & bufferMask` instead of `% capacity`
 
-3. **Stack-based Waiting Queues**: **Massive improvement at scale**
-   - O(1) pop() vs O(n) shift()
+3. **FIFO Waiting Rings**: **Massive improvement at scale**
+   - Head-index ring: O(1) amortised push/pop, no O(n) `shift()`
    - 1.67M ops/sec sustained with many waiters
+   - Serves the longest-waiting caller first. A LIFO stack is equally O(1)
+     but starves the oldest waiter under sustained contention.
 
 4. **Reserved Capacity**: **Zero reallocation overhead**
    - Initial capacity: 16, grows by 2x

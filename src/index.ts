@@ -263,7 +263,9 @@ export class AsyncQueue<T = any> {
     // letting the producer re-enter enqueue() after waking) is what makes the
     // transfer atomic - there is no window in which a woken producer could
     // insert out of order, and a cancelled producer is skipped entirely.
-    if (this.waitingProducersCount > 0) {
+    // Tested against `producersSlots`, not the live count, so cancelled records
+    // are reaped here too instead of lingering in the ring.
+    if (this.producersSlots > 0) {
       const producer = this.popProducer();
       if (producer !== undefined) {
         this.addToBuffer(producer.item);

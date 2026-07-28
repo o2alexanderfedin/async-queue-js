@@ -126,6 +126,23 @@ for (let i = 0; i < 2; i++) {
 }
 ```
 
+#### Detached producers must catch
+
+`close()` rejects every producer that is blocked at that moment. The queue suppresses that rejection on the promise **it** returns, so `void queue.enqueue(x)` can never crash your process. But it cannot reach a promise it did not create — if you detach an `async` wrapper, the rejection lands on *your* promise:
+
+```typescript
+// SAFE — the queue owns and guards this promise
+void queue.enqueue(item);
+
+// UNSAFE — the rejection surfaces on produceData()'s own promise
+produceData(queue, 'P0');
+
+// SAFE — you own it, so you handle it
+void produceData(queue, 'P0').catch(err => {
+  if (err?.message !== 'Queue is closed') throw err;
+});
+```
+
 ### Async Iterator Pattern
 
 ```typescript
@@ -165,22 +182,70 @@ for await (const result of double(queue)) {
 
 ## API
 
-### `new AsyncQueue<T>(maxSize = 1)`
+### `new AsyncQueue<T>(maxSize = 1, options?)`
 Create a new type-safe queue with specified buffer size.
 - `T`: Type of items in the queue
 - `maxSize`: Maximum items before producers block (default: 1)
+- `options.onDropped?: (error, item) => void`: notified whenever an `enqueue()` is rejected, i.e. whenever an item is dropped because the queue was or became closed
 
-### `async enqueue(item: T): Promise<void>`
+`maxSize` is validated and normalised:
+
+| Input | Result |
+|-------|--------|
+| `NaN`, non-number | `TypeError` |
+| `< 1` | `Error('maxSize must be at least 1')` |
+| non-integer (`2.5`) | rounded **up** (`3`) |
+| `> 2^30`, `Infinity` | clamped to `AsyncQueue.MAX_CAPACITY` (`2^30`) |
+
+`capacity` reports the normalised value, not the request. The queue is bounded by construction — there is no unbounded mode.
+
+### `enqueue(item: T, options?): Promise<void>`
 Add an item to the queue. Blocks if queue is full.
+- `options.signal?: AbortSignal`: cancels the call **if it has to block**. Rejects with `signal.reason` (or an `AbortError`), and the item is guaranteed never to enter the queue.
 - Returns: Promise that resolves when item is added
-- Throws: Error if queue is closed
+- Rejects with `Error('Queue is closed')` if the queue is or becomes closed
 
-### `async dequeue(): Promise<T | undefined>`
+**This promise is never reported as an unhandled rejection.** `close()` rejects every blocked producer, and a fire-and-forget producer (`void queue.enqueue(x)`) has no handler attached — on Node ≥ 15 that would terminate the process, once per blocked producer. The queue marks its own rejections as handled when it creates them. Awaiting or `.catch()`ing still observes the error exactly as before; the consequence is that an unobserved dropped item is now *silent* rather than *fatal*. Use `onDropped` to observe drops globally.
+
+### `dequeue(options?): Promise<T | undefined>`
 Remove and return the oldest item. Blocks if queue is empty.
+- `options.signal?: AbortSignal`: cancels the call if it has to block. A cancelled consumer is removed from the queue and can never absorb an item.
 - Returns: The item, or `undefined` if queue is closed and empty
 
+⚠️ **`undefined` is ambiguous here** — it means either "end of stream" or "the next item genuinely is `undefined`". If `T` can be `undefined`, use `dequeueResult()`.
+
+### `dequeueResult(options?): Promise<DequeueResult<T>>`
+Same as `dequeue()`, but tells the two cases apart.
+
+```typescript
+type DequeueResult<T> =
+  | { done: true;  value: undefined }   // closed and drained
+  | { done: false; value: T };          // a payload — may itself be undefined
+
+const result = await queue.dequeueResult();
+if (result.done) return;      // stream really ended
+handle(result.value);         // may legitimately be undefined
+```
+
+`for await`, `drain()` and `take()` all use this internally, so they round-trip `undefined` payloads correctly.
+
+### Cancelling a blocked call
+
+`Promise.race([queue.dequeue(), timeout])` does **not** cancel anything — the queue is never told you walked away, so the waiter stays in line. Pass a signal instead:
+
+```typescript
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 1000);
+
+try {
+  const item = await queue.dequeue({ signal: controller.signal });
+} catch (err) {
+  if ((err as Error).name === 'AbortError') { /* timed out, no item was consumed */ }
+}
+```
+
 ### `close(): void`
-Signal that no more items will be added. Wakes all waiting consumers.
+Signal that no more items will be added. Releases all waiting consumers with end-of-stream, and rejects all blocked producers (their items are dropped). Idempotent.
 
 ### `get isClosed(): boolean`
 Check if queue is closed AND empty.
@@ -195,8 +260,8 @@ Get number of producers waiting to enqueue.
 ### `get waitingConsumerCount(): number`
 Get number of consumers waiting to dequeue.
 
-### `[Symbol.asyncIterator](): AsyncIterator<T>`
-Returns an async iterator for use with `for-await-of` loops.
+### `[Symbol.asyncIterator](): AsyncIterableIterator<T>`
+Returns an async iterator for use with `for-await-of` loops. Calling `return()` on it — which `break` does automatically — releases a suspended `next()` immediately, without waiting for `close()`.
 
 ### `iterate(): AsyncIterable<T>`
 Creates an async iterable for consuming queue items.
@@ -214,7 +279,7 @@ Takes up to n items from the queue
 
 1. **Circular Buffer**: O(1) operations vs O(n) array.shift()
 2. **Power-of-2 Sizing**: Bitwise AND for modulo operations
-3. **Stack-based Waiting**: O(1) pop() vs O(n) shift()
+3. **FIFO Waiting Rings**: head-index rings, O(1) amortised push and pop — no `shift()`, and unlike a stack they cannot starve the longest-waiting caller
 4. **Reserved Capacity**: Pre-allocate and never shrink
 5. **Direct Handoff**: Skip buffer when consumer is waiting
 

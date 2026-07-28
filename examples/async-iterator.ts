@@ -157,7 +157,15 @@ async function drainAndTake() {
     }
   };
 
-  continuousProducer(); // Don't await, let it run
+  // Don't await, let it run. A DETACHED producer must handle its own rejection:
+  // queue2.close() below rejects the enqueue this function is sitting on, and
+  // that rejection lands on *this function's* promise. The queue can suppress
+  // rejections on the promise IT returns (so `void queue.enqueue(x)` is safe),
+  // but it cannot reach a promise it never created. Without this catch the
+  // example terminates the process with 'Queue is closed'.
+  void continuousProducer().catch((err: unknown) => {
+    if (!(err instanceof Error) || err.message !== 'Queue is closed') throw err;
+  });
 
   console.log('\nTaking first 5 items...');
   const firstFive = await queue2.take(5);
