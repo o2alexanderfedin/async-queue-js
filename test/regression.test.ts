@@ -2,7 +2,7 @@
  * Regression tests for the defects fixed in this branch, plus the new API
  * surface those fixes introduced. Each block names the defect it pins down.
  */
-import { AsyncQueue } from '../src/index';
+import { AsyncQueue, DequeueResult } from '../src/index';
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
@@ -98,5 +98,84 @@ describe('D1: close() must not produce unhandled rejections', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe('D2: undefined must not double as the end-of-stream sentinel', () => {
+  test('dequeueResult() separates a real undefined payload from end of stream', async () => {
+    const q = new AsyncQueue<number | undefined>(4);
+    await q.enqueue(undefined);
+    q.close();
+
+    const first = await q.dequeueResult();
+    expect(first.done).toBe(false);
+    expect(first.value).toBeUndefined();      // a payload, not the end
+
+    const second = await q.dequeueResult();
+    expect(second.done).toBe(true);           // now it really is the end
+    expect(second.value).toBeUndefined();
+  });
+
+  test('an all-undefined stream survives every consumer entry point', async () => {
+    const holes = [undefined, undefined, undefined];
+
+    const viaIterator = new AsyncQueue<undefined>(4);
+    for (const h of holes) await viaIterator.enqueue(h);
+    viaIterator.close();
+    const collected: undefined[] = [];
+    for await (const v of viaIterator) collected.push(v);
+    expect(collected).toHaveLength(3);
+
+    const viaDrain = new AsyncQueue<undefined>(4);
+    for (const h of holes) await viaDrain.enqueue(h);
+    viaDrain.close();
+    expect(await viaDrain.drain()).toHaveLength(3);
+
+    const viaTake = new AsyncQueue<undefined>(4);
+    for (const h of holes) await viaTake.enqueue(h);
+    expect(await viaTake.take(3)).toHaveLength(3);   // still OPEN, must not truncate
+
+    const viaGenerator = new AsyncQueue<undefined>(4);
+    for (const h of holes) await viaGenerator.enqueue(h);
+    viaGenerator.close();
+    const fromGen: undefined[] = [];
+    for await (const v of viaGenerator.toAsyncGenerator()) fromGen.push(v);
+    expect(fromGen).toHaveLength(3);
+
+    const viaIterate = new AsyncQueue<undefined>(4);
+    for (const h of holes) await viaIterate.enqueue(h);
+    viaIterate.close();
+    const fromIterate: undefined[] = [];
+    for await (const v of viaIterate.iterate()) fromIterate.push(v);
+    expect(fromIterate).toHaveLength(3);
+  });
+
+  test('undefined payloads interleaved with real ones keep their positions', async () => {
+    const q = new AsyncQueue<number | undefined>(8);
+    const input = [1, undefined, 2, undefined, undefined, 3];
+    for (const v of input) await q.enqueue(v);
+    q.close();
+    expect(await q.drain()).toEqual(input);
+  });
+
+  test('dequeueResult() blocks like dequeue() and resolves done on close', async () => {
+    const q = new AsyncQueue<number>(4);
+    let settled: DequeueResult<number> | null = null;
+    const pending = q.dequeueResult().then(r => { settled = r; return r; });
+    await sleep(10);
+    expect(settled).toBeNull();
+    expect(q.waitingConsumerCount).toBe(1);
+
+    q.close();
+    const result = await pending;
+    expect(result.done).toBe(true);
+  });
+
+  test('dequeue() keeps its old ambiguous signature for existing callers', async () => {
+    const q = new AsyncQueue<number>(4);
+    await q.enqueue(7);
+    q.close();
+    expect(await q.dequeue()).toBe(7);
+    expect(await q.dequeue()).toBeUndefined();   // end of stream, as before
   });
 });

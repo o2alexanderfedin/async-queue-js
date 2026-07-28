@@ -44,6 +44,23 @@ const NOOP = (): void => {};
 const RESOLVED: Promise<void> = Promise.resolve();
 
 /**
+ * The outcome of a {@link AsyncQueue.dequeueResult} call.
+ *
+ * `done: true` means the queue is closed and drained — end of stream. Any other
+ * result carries a real payload in `value`, **including `undefined`**. This is
+ * the type to reach for whenever `T` can itself be `undefined`; `dequeue()`
+ * cannot tell those two cases apart.
+ *
+ * @template T The type of items in the queue
+ */
+export type DequeueResult<T> =
+  | { readonly done: true; readonly value: undefined }
+  | { readonly done: false; readonly value: T };
+
+/** Shared end-of-stream result. Frozen so callers cannot corrupt it. */
+const DONE: DequeueResult<never> = Object.freeze({ done: true as const, value: undefined });
+
+/**
  * Options accepted by the {@link AsyncQueue} constructor.
  *
  * @template T The type of items in the queue
@@ -152,15 +169,27 @@ export class AsyncQueue<T = any> {
   }
 
   /**
-   * Removes an item from the circular buffer
+   * Removes the oldest item from the circular buffer and wakes one waiting
+   * producer, if any.
+   *
+   * The caller MUST have established that `count > 0`. The buffer slot is read
+   * through a cast because `undefined` is a legitimate payload — emptiness is
+   * tracked by `count`, never by inspecting the slot.
    */
-  private removeFromBuffer(): T | undefined {
-    if (this.count === 0) return undefined;
-
-    const item = this.buffer[this.head];
+  private takeFromBuffer(): T {
+    const item = this.buffer[this.head] as T;
     this.buffer[this.head] = undefined; // Help GC
     this.head = (this.head + 1) & (this.buffer.length - 1);
     this.count--;
+
+    // WAKE MECHANISM: If any producer is waiting for space, wake ONE
+    // Uses LIFO (stack) for O(1) performance - order doesn't affect correctness
+    if (this.waitingProducersCount > 0) {
+      const producer = this.popWaiter(this.waitingProducers, this.waitingProducersCount);
+      this.waitingProducersCount--;
+      producer?.(); // Calling resolve() wakes the awaiting producer
+    }
+
     return item;
   }
 
@@ -295,38 +324,71 @@ export class AsyncQueue<T = any> {
   }
 
   /**
+   * BLOCKING MECHANISM: returns a promise that settles when a producer adds an
+   * item or the queue closes.
+   *
+   * Deliberately NOT an `async` helper that loops internally. An extra async
+   * frame costs an extra microtask hop between "a wakeup arrived" and "the item
+   * is taken", and another consumer can drain the buffer inside that gap. The
+   * caller must therefore re-check `count` in its own frame — see the `while`
+   * loops in {@link dequeue} and {@link dequeueResult}.
+   */
+  private parkConsumer(): Promise<void> {
+    // Create unresolved Promise, store only the resolve function
+    // This suspends the consumer until a producer adds an item
+    return new Promise<void>(resolve => {
+      this.waitingConsumersCount = this.pushWaiter(this.waitingConsumers, this.waitingConsumersCount, resolve);
+    });
+  }
+
+  /**
    * Removes and returns the oldest item from the queue. Blocks if the queue is empty.
-   * @returns A promise that resolves to the item, or undefined if the queue is closed and empty
+   *
+   * @returns A promise that resolves to the item, or `undefined` if the queue is
+   *          closed and empty
+   *
+   * **`undefined` is ambiguous here.** It means either "the stream ended" or "the
+   * next item genuinely is `undefined`". If `T` can be `undefined`, use
+   * {@link dequeueResult} instead — every other consumer entry point
+   * (`for await`, {@link drain}, {@link take}) already does.
    */
   async dequeue(): Promise<T | undefined> {
-    // BLOCKING MECHANISM: Wait if queue is empty
-    // Consumers block here until producers provide items or queue closes
-    while (this.count === 0 && !this.closed) {
-      // Create unresolved Promise, store only the resolve function
-      // This suspends the consumer until a producer adds an item
-      await new Promise<void>(resolve => {
-        this.waitingConsumersCount = this.pushWaiter(this.waitingConsumers, this.waitingConsumersCount, resolve);
-      });
-    }
-
-    // After waking/looping, check if we exited due to close (not an item)
-    // Return undefined to signal "end of stream" to consumers
-    if (this.count === 0 && this.closed) {
-      return undefined;
+    while (this.count === 0) {
+      // Nothing buffered and nothing more coming: end of stream.
+      if (this.closed) {
+        return undefined;
+      }
+      await this.parkConsumer();
     }
 
     // Remove and get the oldest item from circular buffer (FIFO order)
-    const item = this.removeFromBuffer();
+    return this.takeFromBuffer();
+  }
 
-    // WAKE MECHANISM: If any producer is waiting for space, wake ONE
-    // Uses LIFO (stack) for O(1) performance - order doesn't affect correctness
-    if (this.waitingProducersCount > 0) {
-      const producer = this.popWaiter(this.waitingProducers, this.waitingProducersCount);
-      this.waitingProducersCount--;
-      producer?.(); // Calling resolve() wakes the awaiting producer
+  /**
+   * Removes and returns the oldest item, distinguishing "end of stream" from a
+   * payload that happens to be `undefined`. Blocks if the queue is empty.
+   *
+   * @returns `{ done: true }` once the queue is closed and drained, otherwise
+   *          `{ done: false, value }` where `value` may be any `T` — `undefined`
+   *          included
+   *
+   * @example
+   * ```typescript
+   * const result = await queue.dequeueResult();
+   * if (result.done) return;        // stream really ended
+   * handle(result.value);           // may legitimately be undefined
+   * ```
+   */
+  async dequeueResult(): Promise<DequeueResult<T>> {
+    while (this.count === 0) {
+      if (this.closed) {
+        return DONE;
+      }
+      await this.parkConsumer();
     }
 
-    return item;
+    return { done: false, value: this.takeFromBuffer() };
   }
 
   /**
@@ -437,13 +499,14 @@ export class AsyncQueue<T = any> {
    * ```
    */
   async *[Symbol.asyncIterator](): AsyncIterator<T> {
-    while (true) {
-      const item = await this.dequeue();
-      if (item === undefined) {
-        // dequeue returns undefined only when queue is closed and empty
+    for (;;) {
+      // dequeueResult(), not dequeue(): an item whose value is `undefined` must
+      // not be mistaken for the end of the stream.
+      const result = await this.dequeueResult();
+      if (result.done) {
         break;
       }
-      yield item;
+      yield result.value;
     }
   }
 
@@ -517,10 +580,13 @@ export class AsyncQueue<T = any> {
    */
   async drain(): Promise<T[]> {
     const items: T[] = [];
-    for await (const item of this) {
-      items.push(item);
+    for (;;) {
+      const result = await this.dequeueResult();
+      if (result.done) {
+        return items;
+      }
+      items.push(result.value);
     }
-    return items;
   }
 
   /**
@@ -540,12 +606,11 @@ export class AsyncQueue<T = any> {
   async take(n: number): Promise<T[]> {
     const items: T[] = [];
     for (let i = 0; i < n && !this.isClosed; i++) {
-      const item = await this.dequeue();
-      if (item !== undefined) {
-        items.push(item);
-      } else {
+      const result = await this.dequeueResult();
+      if (result.done) {
         break;
       }
+      items.push(result.value);
     }
     return items;
   }
