@@ -241,6 +241,9 @@ function abortReason(signal: AbortSignal): unknown {
  * `message` is still exactly `'Queue is closed'`, so existing `err.message`
  * checks keep working.
  *
+ * `instanceof` is reliable across module-system boundaries — see
+ * {@link BRAND} for why that needs saying.
+ *
  * @template T The type of items in the queue
  *
  * @example
@@ -266,9 +269,76 @@ export class QueueClosedError<T = unknown> extends Error {
     this.item = item;
     // Keeps `instanceof` working if a consumer downlevels this module to ES5,
     // where `extends Error` otherwise loses the prototype link.
-    Object.setPrototypeOf(this, QueueClosedError.prototype);
+    //
+    // `new.target.prototype`, not `QueueClosedError.prototype`: the latter
+    // clobbered the prototype of *subclass* instances, so for
+    // `class AppError extends QueueClosedError {}`,
+    // `new AppError(x) instanceof AppError` answered false. `new.target` is the
+    // constructor actually invoked, so the repair now restores the right link
+    // instead of flattening every subclass to the base. The fallback covers ES5
+    // downlevel emit, where `new.target` can be undefined; that path is exactly
+    // the old behaviour.
+    Object.setPrototypeOf(this, new.target?.prototype ?? QueueClosedError.prototype);
   }
 }
+
+/**
+ * Marker read by the `Symbol.hasInstance` hook installed below.
+ *
+ * `Symbol.for` (not `Symbol()`) is the entire point: it resolves through the
+ * cross-realm global symbol registry, so a second, separately-loaded copy of
+ * this module computes the *same* symbol and the two copies recognise each
+ * other's errors.
+ *
+ * The major version is part of the key. If a later major changes the shape of
+ * `QueueClosedError`, a v2 copy must not vouch for a v3 error whose `item`
+ * semantics it does not know.
+ */
+const QUEUE_CLOSED_BRAND = Symbol.for('@alexanderfedin/async-queue:QueueClosedError:v2');
+
+Object.defineProperty(QueueClosedError.prototype, QUEUE_CLOSED_BRAND, {
+  value: true,
+  enumerable: false,
+  writable: false,
+  configurable: false
+});
+
+/**
+ * Makes `err instanceof QueueClosedError` survive the dual-package hazard.
+ *
+ * This package ships both an ESM and a CommonJS build. A dependency graph can
+ * load both — an ESM app `import`s it while one of its CommonJS dependencies
+ * `require`s it — and then there are two `QueueClosedError` classes with two
+ * distinct prototypes. A prototype-chain `instanceof` tests against whichever
+ * copy the *checking* code imported, so an error thrown by the other copy fails
+ * the check silently and falls through to the caller's `else { throw err }`.
+ * That is data loss, not just a nuisance: `err.item` is the only handle on a
+ * payload the queue refused.
+ *
+ * Installed with `defineProperty` rather than declared as a `static` class
+ * member on purpose. A declared `[Symbol.hasInstance]` becomes part of the
+ * emitted `.d.ts` and changes how TypeScript narrows `instanceof` — this way the
+ * public type surface is byte-identical to before and narrowing to
+ * `QueueClosedError` (hence `err.item`) keeps working exactly as it did.
+ */
+Object.defineProperty(QueueClosedError, Symbol.hasInstance, {
+  value: function (this: unknown, value: unknown): boolean {
+    // Only QueueClosedError itself gets the relaxed check. A subclass keeps
+    // exact prototype-chain semantics, otherwise `x instanceof MySubclass`
+    // would answer true for every QueueClosedError ever created.
+    if (this !== QueueClosedError) {
+      return Function.prototype[Symbol.hasInstance].call(this, value);
+    }
+    return (
+      typeof value === 'object' &&
+      value !== null &&
+      (value as Record<symbol, unknown>)[QUEUE_CLOSED_BRAND] === true
+    );
+  },
+  enumerable: false,
+  writable: false,
+  configurable: false
+});
 
 /**
  * Options accepted by the {@link AsyncQueue} constructor.
@@ -1049,5 +1119,21 @@ export class AsyncQueue<T = any> {
   }
 }
 
-// Default export for CommonJS compatibility
+/**
+ * Default export, identical to the named {@link AsyncQueue} export.
+ *
+ * Until v2 this was only ever correct by accident. The package shipped a single
+ * CommonJS build with no `exports` map, so an ESM consumer writing
+ * `import AsyncQueue from '@alexanderfedin/async-queue'` was handed the CJS
+ * *namespace object* — `{ AsyncQueue, QueueClosedError, default }` — and
+ * `new AsyncQueue()` threw `TypeError: AsyncQueue is not a constructor`, even
+ * though the shipped `.d.ts` promised a class and `tsc` reported no error.
+ *
+ * v2 publishes a real ESM build behind the `import` condition, so the runtime
+ * value now matches the type that was always advertised.
+ *
+ * Prefer the named export. The default is kept because TypeScript CommonJS
+ * consumers compiling with `esModuleInterop` already resolve it to this class,
+ * and removing it would break code that works today.
+ */
 export default AsyncQueue;
