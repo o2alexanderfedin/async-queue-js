@@ -141,6 +141,51 @@ function abortReason(signal: AbortSignal): unknown {
 }
 
 /**
+ * Rejection reason for an `enqueue()` that the queue refused because it is
+ * closed — either the caller enqueued after `close()`, or the caller was blocked
+ * on a full queue when `close()` arrived.
+ *
+ * **Carries the item that was not enqueued.** `close()` used to reject blocked
+ * producers with a bare `Error('Queue is closed')`, which named no payload, so a
+ * caller that had already `await`ed its way into the queue had no reference to
+ * what it lost and could not retry it elsewhere. At-least-once delivery on top
+ * of the queue was therefore impossible to build. The item is now reachable
+ * three ways: on this error, from {@link AsyncQueueOptions.onDropped}, and from
+ * the array {@link AsyncQueue.close} returns.
+ *
+ * `message` is still exactly `'Queue is closed'`, so existing `err.message`
+ * checks keep working.
+ *
+ * @template T The type of items in the queue
+ *
+ * @example
+ * ```typescript
+ * try {
+ *   await queue.enqueue(job);
+ * } catch (err) {
+ *   if (err instanceof QueueClosedError) {
+ *     await deadLetterQueue.enqueue(err.item);   // recover the exact payload
+ *   } else {
+ *     throw err;
+ *   }
+ * }
+ * ```
+ */
+export class QueueClosedError<T = unknown> extends Error {
+  /** The item that was refused. Never entered the queue and never will. */
+  readonly item: T;
+
+  constructor(item: T) {
+    super('Queue is closed');
+    this.name = 'QueueClosedError';
+    this.item = item;
+    // Keeps `instanceof` working if a consumer downlevels this module to ES5,
+    // where `extends Error` otherwise loses the prototype link.
+    Object.setPrototypeOf(this, QueueClosedError.prototype);
+  }
+}
+
+/**
  * Options accepted by the {@link AsyncQueue} constructor.
  *
  * @template T The type of items in the queue
@@ -161,8 +206,11 @@ export interface AsyncQueueOptions<T = any> {
    * re-thrown: this hook runs during close(), and letting it escape would
    * re-create the very "queue lifecycle kills the host process" failure the
    * suppression above exists to prevent.
+   *
+   * `error.item` is the same value as `item`; both are provided so the hook can
+   * be used either way round.
    */
-  onDropped?: (error: Error, item: T) => void;
+  onDropped?: (error: QueueClosedError<T>, item: T) => void;
 }
 
 /**
@@ -196,7 +244,7 @@ export class AsyncQueue<T = any> {
   private closed = false;
 
   /** Optional observer for items dropped by a rejected enqueue(). */
-  private readonly onDropped: ((error: Error, item: T) => void) | undefined;
+  private readonly onDropped: ((error: QueueClosedError<T>, item: T) => void) | undefined;
 
   /**
    * Largest capacity a queue can be created with (2^30).
@@ -482,18 +530,22 @@ export class AsyncQueue<T = any> {
   }
 
   /**
-   * Rejects a suspended producer because the queue closed underneath it.
-   * Its item is dropped, and the rejection is pre-marked as handled (see D1).
+   * Rejects a suspended producer because the queue closed underneath it, and
+   * returns the item that was lost so close() can hand it back to its caller.
+   *
+   * The rejection is a {@link QueueClosedError} carrying the item, and is
+   * pre-marked as handled (see D1).
    */
-  private rejectProducerClosed(waiter: ProducerWaiter<T>): void {
-    const error = new Error('Queue is closed');
+  private rejectProducerClosed(waiter: ProducerWaiter<T>): T {
     const item = waiter.item;
+    const error = new QueueClosedError<T>(item);
     waiter.settled = true;
     waiter.item = undefined as T; // Help GC
     AsyncQueue.detach(waiter);
     waiter.reject(error);
     waiter.promise.catch(NOOP);
     this.reportDropped(error, item);
+    return item;
   }
 
   /**
@@ -503,7 +555,7 @@ export class AsyncQueue<T = any> {
    * close() path, where an escaping exception would either corrupt the shutdown
    * loop or become the unhandled rejection this whole mechanism exists to avoid.
    */
-  private reportDropped(error: Error, item: T): void {
+  private reportDropped(error: QueueClosedError<T>, item: T): void {
     const handler = this.onDropped;
     if (handler === undefined) return;
     try {
@@ -518,7 +570,8 @@ export class AsyncQueue<T = any> {
    * Builds the rejected promise returned by a failed enqueue, pre-marked as
    * handled so it can never reach `process.on('unhandledRejection')`.
    */
-  private rejectEnqueue(error: Error, item: T): Promise<void> {
+  private rejectEnqueue(item: T): Promise<void> {
+    const error = new QueueClosedError<T>(item);
     const rejected = Promise.reject(error);
     // Attaching a handler here does NOT consume the rejection - anyone who
     // awaits or .catch()es `rejected` still sees `error`. It only tells the
@@ -533,7 +586,9 @@ export class AsyncQueue<T = any> {
    *
    * @param item The item to add to the queue
    * @returns A promise that resolves when the item has been added, and rejects
-   *          with `Error('Queue is closed')` if the queue is or becomes closed
+   *          with a {@link QueueClosedError} — whose `.item` is this very
+   *          `item`, and whose `.message` is still `'Queue is closed'` — if the
+   *          queue is or becomes closed
    *
    * The returned promise is *never* reported as an unhandled rejection. `close()`
    * rejects every blocked producer, and a producer started fire-and-forget
@@ -552,7 +607,7 @@ export class AsyncQueue<T = any> {
   enqueue(item: T, options?: AbortOptions): Promise<void> {
     // Prevent new items after close() to ensure clean shutdown
     if (this.closed) {
-      return this.rejectEnqueue(new Error('Queue is closed'), item);
+      return this.rejectEnqueue(item);
     }
 
     // DIRECT HANDOFF: a consumer is already waiting, so skip the buffer entirely
@@ -651,13 +706,38 @@ export class AsyncQueue<T = any> {
   /**
    * Signals that no more items will be added to the queue.
    * Existing items can still be consumed.
+   *
+   * @returns The items of every producer that was blocked on a full queue at
+   *          this moment, **in FIFO order**. Those items never entered the queue
+   *          and never will; returning them is what makes the loss recoverable
+   *          rather than merely observable. Empty when nothing was blocked, and
+   *          always empty on a repeat call, since `close()` is idempotent.
+   *
+   * Items still buffered are *not* returned — they are not lost, and a consumer
+   * can still drain them after `close()`.
+   *
+   * The same items also reach the blocked producers themselves, as
+   * `QueueClosedError.item`, and the constructor's `onDropped` hook. Use
+   * whichever the shutdown path can actually see: the producer's own `catch` is
+   * the only one that knows the surrounding context, this return value is the
+   * only one available to code that owns the queue rather than the producers.
+   *
+   * @example
+   * ```typescript
+   * const undelivered = queue.close();
+   * for (const item of undelivered) {
+   *   await backupQueue.enqueue(item);   // nothing is silently lost
+   * }
+   * ```
    */
-  close(): void {
+  close(): T[] {
+    const dropped: T[] = [];
+
     // Idempotent. After the first call no new waiter can be created: enqueue()
     // and both dequeue paths check `closed` before they suspend, and close() is
     // synchronous, so nothing can interleave.
     if (this.closed) {
-      return;
+      return dropped;
     }
 
     // Signal that no more items will be added
@@ -672,13 +752,17 @@ export class AsyncQueue<T = any> {
       this.settleConsumerDone(consumer);
     }
 
-    // Reject ALL waiting producers - their items are dropped
-    // This prevents deadlock where producers wait forever
+    // Reject ALL waiting producers - their items cannot be enqueued, so they are
+    // collected and handed back to the caller instead of being discarded.
+    // popProducer() is FIFO, so `dropped` is in the order the producers called
+    // enqueue(), i.e. the order in which the items would have entered the queue.
     for (;;) {
       const producer = this.popProducer();
       if (producer === undefined) break;
-      this.rejectProducerClosed(producer);
+      dropped.push(this.rejectProducerClosed(producer));
     }
+
+    return dropped;
   }
 
   /**

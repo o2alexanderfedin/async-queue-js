@@ -283,17 +283,24 @@ describe('close() races', () => {
     expect(await raceTimeout(Promise.all(cs), 100)).toEqual([undefined, undefined, undefined]);
   });
 
-  test('close() while producers are blocked: their items are silently discarded', async () => {
+  // The original name was 'close() while producers are blocked: their items are
+  // silently discarded', and the last assertion's comment read "2 and 3 are gone
+  // with no way to recover them". The rejection behaviour it pins is unchanged
+  // and still asserted below; what changed is the "no way to recover" half — see
+  // test/close-recovery.test.ts. Renamed and extended rather than left standing
+  // as a claim the library no longer makes.
+  test('close() while producers are blocked: their items leave the queue, but recoverably', async () => {
     const q = new AsyncQueue<number>(1);
     await q.enqueue(1);
     const p2 = q.enqueue(2).then(() => 'ok', (e: Error) => e.message);
     const p3 = q.enqueue(3).then(() => 'ok', (e: Error) => e.message);
     await sleep(5);
-    q.close();
+    const undelivered = q.close();
     expect(await raceTimeout(Promise.all([p2, p3]), 100))
       .toEqual(['Queue is closed', 'Queue is closed']);
-    // Item 1 survives; 2 and 3 are gone with no way to recover them.
+    // Item 1 survives in the buffer; 2 and 3 never enter it — but close() names them.
     expect(await q.drain()).toEqual([1]);
+    expect(undelivered).toEqual([2, 3]);
   });
 
   test('enqueue after close rejects', async () => {
