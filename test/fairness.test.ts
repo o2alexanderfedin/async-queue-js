@@ -190,7 +190,7 @@ describe('D5/D6: the FIFO wake is O(1) per waiter, not O(n)', () => {
   // estimator that is not dominated by scheduler noise.
   const bestPerWaiter = async (n: number): Promise<number> => {
     let best = Infinity;
-    for (let i = 0; i < 3; i++) best = Math.min(best, await wakeAll(n));
+    for (let i = 0; i < 5; i++) best = Math.min(best, await wakeAll(n));
     return best;
   };
 
@@ -199,9 +199,23 @@ describe('D5/D6: the FIFO wake is O(1) per waiter, not O(n)', () => {
     const small = await bestPerWaiter(10_000);
     const large = await bestPerWaiter(80_000);
 
-    // 8x the waiters. O(1) per wake => a flat per-waiter cost. An O(n) wake
-    // (e.g. Array.prototype.shift) would make the per-waiter cost 8x higher.
-    // Measured on this implementation: 0.9x - 2.6x, dominated by cache effects.
-    expect(large / small).toBeLessThan(4.5);
+    // 8x the waiters. O(1) per wake => a flat per-waiter cost.
+    //
+    // THRESHOLD CALIBRATION. This assertion previously read `toBeLessThan(4.5)`
+    // on the stated grounds that an O(n) wake "would be 8x higher", and it
+    // failed roughly one full-suite run in six — 4.5 sat inside this
+    // measurement's own noise band, not above it. Both numbers were re-measured
+    // rather than re-guessed:
+    //
+    //   this implementation, 20 trials, idle : min 0.35x  p50 2.5x  p90 3.6x
+    //   this implementation, under jest load : observed up to 5.5x
+    //   Array.prototype.shift() FIFO         : 57.6x  (0.0008ms -> 0.046ms)
+    //
+    // The "8x" was the asymptotic ratio; the real signal is an order of
+    // magnitude larger because V8's shift() is a memmove, making the drain
+    // O(n^2) in wall-clock. So the two regimes are separated by ~10x of margin,
+    // and the threshold belongs between them — above the noise ceiling, far
+    // below the regression it guards against.
+    expect(large / small).toBeLessThan(15);
   }, 120000);
 });
