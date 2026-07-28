@@ -37,6 +37,37 @@ function nextPowerOfTwo(n: number): number {
   return n <= 1 ? 1 : 2 ** (32 - Math.clz32(n - 1));
 }
 
+/** Shared no-op, used to mark a rejected promise as handled. */
+const NOOP = (): void => {};
+
+/** Shared already-resolved promise for the non-blocking enqueue path. */
+const RESOLVED: Promise<void> = Promise.resolve();
+
+/**
+ * Options accepted by the {@link AsyncQueue} constructor.
+ *
+ * @template T The type of items in the queue
+ */
+export interface AsyncQueueOptions<T = any> {
+  /**
+   * Called whenever the queue rejects an `enqueue()`, i.e. whenever an item is
+   * dropped because the queue was (or became) closed.
+   *
+   * Those rejections are marked as handled internally so that a fire-and-forget
+   * producer cannot terminate the process (see {@link AsyncQueue.enqueue}). That
+   * makes this hook the only *global* way to observe a dropped item — awaiting
+   * the returned promise still works and is unaffected.
+   *
+   * Fires for every rejected enqueue, whether or not the caller also observes
+   * the rejection. The hook should not throw; if it does, the exception is
+   * reported via `console.error` and otherwise ignored. It is deliberately not
+   * re-thrown: this hook runs during close(), and letting it escape would
+   * re-create the very "queue lifecycle kills the host process" failure the
+   * suppression above exists to prevent.
+   */
+  onDropped?: (error: Error, item: T) => void;
+}
+
 /**
  * AsyncQueue provides a thread-safe producer-consumer queue with backpressure control,
  * similar to .NET's Channel<T> or Go channels.
@@ -60,6 +91,9 @@ export class AsyncQueue<T = any> {
 
   private closed = false;
 
+  /** Optional observer for items dropped by a rejected enqueue(). */
+  private readonly onDropped: ((error: Error, item: T) => void) | undefined;
+
   /**
    * Largest capacity a queue can be created with (2^30).
    * Larger requests are clamped to this value; see the constructor.
@@ -81,8 +115,11 @@ export class AsyncQueue<T = any> {
    * - `Infinity` and anything above {@link AsyncQueue.MAX_CAPACITY} are clamped to
    *   `MAX_CAPACITY` (2^30). This queue is bounded by construction; there is no
    *   unbounded mode. `capacity` reports the clamped value, not the request.
+   *
+   * @param options Optional queue-wide settings, see {@link AsyncQueueOptions}
    */
-  constructor(maxSize = 1) {
+  constructor(maxSize = 1, options?: AsyncQueueOptions<T>) {
+    this.onDropped = options?.onDropped;
     if (typeof maxSize !== 'number' || Number.isNaN(maxSize)) {
       throw new TypeError(`maxSize must be a number, received ${String(maxSize)}`);
     }
@@ -150,17 +187,78 @@ export class AsyncQueue<T = any> {
   }
 
   /**
-   * Adds an item to the queue. Blocks if the queue is full.
-   * @param item The item to add to the queue
-   * @returns A promise that resolves when the item has been added
-   * @throws Error if the queue has been closed
+   * Reports a dropped item to the optional `onDropped` hook.
+   *
+   * A throwing hook is contained: it is logged, not propagated. This runs on the
+   * close() path, where an escaping exception would either corrupt the shutdown
+   * loop or become the unhandled rejection this whole mechanism exists to avoid.
    */
-  async enqueue(item: T): Promise<void> {
+  private reportDropped(error: Error, item: T): void {
+    const handler = this.onDropped;
+    if (handler === undefined) return;
+    try {
+      handler(error, item);
+    } catch (hookError) {
+      // eslint-disable-next-line no-console
+      console.error('AsyncQueue: onDropped handler threw', hookError);
+    }
+  }
+
+  /**
+   * Builds the rejected promise returned by a failed enqueue, pre-marked as
+   * handled so it can never reach `process.on('unhandledRejection')`.
+   */
+  private rejectEnqueue(error: Error, item: T): Promise<void> {
+    const rejected = Promise.reject(error);
+    // Attaching a handler here does NOT consume the rejection - anyone who
+    // awaits or .catch()es `rejected` still sees `error`. It only tells the
+    // engine that this rejection is accounted for.
+    rejected.catch(NOOP);
+    this.reportDropped(error, item);
+    return rejected;
+  }
+
+  /**
+   * Adds an item to the queue. Blocks if the queue is full.
+   *
+   * @param item The item to add to the queue
+   * @returns A promise that resolves when the item has been added, and rejects
+   *          with `Error('Queue is closed')` if the queue is or becomes closed
+   *
+   * The returned promise is *never* reported as an unhandled rejection. `close()`
+   * rejects every blocked producer, and a producer started fire-and-forget
+   * (`void queue.enqueue(x)`, the shape used in this library's own README
+   * examples) has no handler attached, so on Node >= 15 that rejection would
+   * terminate the host process — one fatal event per blocked producer. The queue
+   * therefore marks its own rejections as handled at the moment it creates them.
+   *
+   * Consequence: if you neither await nor `.catch()` the returned promise, a
+   * dropped item is now silent rather than fatal. Pass `onDropped` to the
+   * constructor to observe drops globally.
+   */
+  enqueue(item: T): Promise<void> {
     // Prevent new items after close() to ensure clean shutdown
     if (this.closed) {
-      throw new Error('Queue is closed');
+      return this.rejectEnqueue(new Error('Queue is closed'), item);
     }
 
+    // FAST PATH: space available, no suspension, no extra promise allocation.
+    if (this.count < this.maxSize) {
+      this.deliver(item);
+      return RESOLVED;
+    }
+
+    // SLOW PATH: the producer must block, which means this promise can reject
+    // later (from close()). Guard it now, while we still hold the reference.
+    const pending = this.enqueueBlocking(item);
+    pending.catch((error: Error) => this.reportDropped(error, item));
+    return pending;
+  }
+
+  /**
+   * The suspending half of {@link enqueue}. Only entered when the queue is full.
+   */
+  private async enqueueBlocking(item: T): Promise<void> {
     // BLOCKING MECHANISM: Wait if queue is at capacity
     // This implements backpressure - fast producers slow down to match consumers
     while (this.count >= this.maxSize && !this.closed) {
@@ -176,6 +274,14 @@ export class AsyncQueue<T = any> {
       }
     }
 
+    this.deliver(item);
+  }
+
+  /**
+   * Places an item in the buffer and wakes one waiting consumer, if any.
+   * Callers must have already established that there is room.
+   */
+  private deliver(item: T): void {
     // Add item to circular buffer (we now have space)
     this.addToBuffer(item);
 
