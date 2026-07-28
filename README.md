@@ -53,6 +53,29 @@ npm install @alexanderfedin/async-queue
 import { AsyncQueue } from '@alexanderfedin/async-queue';
 ```
 
+### Module formats
+
+The package ships **both** an ES module and a CommonJS build behind an `exports`
+map, so it works from either side without a bundler shim. Requires Node 16+.
+
+```typescript
+// ESM — resolves to dist/esm
+import { AsyncQueue, QueueClosedError } from '@alexanderfedin/async-queue';
+
+// CommonJS — resolves to dist/cjs
+const { AsyncQueue, QueueClosedError } = require('@alexanderfedin/async-queue');
+```
+
+Prefer the **named** export. There is also a default export (`import AsyncQueue
+from '@alexanderfedin/async-queue'`) kept for compatibility; before v2 it
+type-checked but threw `TypeError: AsyncQueue is not a constructor` at runtime in
+ESM, because the package had no ESM build. It is a real constructor now.
+
+`.` and `./package.json` are the only public subpaths — reaching into `dist/`
+directly is not supported. TypeScript declarations resolve under every
+`moduleResolution` setting, including `nodenext`, and `src/index.ts` is published
+so declaration maps resolve and "go to definition" lands on real source.
+
 ## Usage
 
 ### Basic Example
