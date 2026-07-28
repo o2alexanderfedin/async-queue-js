@@ -5,39 +5,146 @@ const raceTimeout = <T>(p: Promise<T>, ms: number, tag = 'HUNG') =>
   Promise.race([p, sleep(ms).then(() => tag as any)]);
 
 describe('DEFECT: abandoned PRODUCER waiter still delivers its item later', () => {
-  test('an enqueue that the caller timed out still lands in the queue afterwards', async () => {
+  // REWRITTEN. The original body was:
+  //
+  //   const outcome = await Promise.race([
+  //     q.enqueue('GHOST').then(() => 'enqueued', () => 'rejected'),
+  //     sleep(20).then(() => 'TIMEOUT')
+  //   ]);
+  //   expect(outcome).toBe('TIMEOUT');
+  //   expect(await q.dequeue()).toBe('A');
+  //   await sleep(10);
+  //   expect(q.size).toBe(0);          // nothing should have been inserted
+  //
+  // That is unsatisfiable, and not because of a missing feature. Promise.race
+  // does not cancel anything: the enqueue('GHOST') promise is still live, still
+  // has handlers attached, and the queue has received no signal whatsoever that
+  // the caller lost interest. For q.size to stay 0 there, a blocked enqueue
+  // would have to DISCARD its item on wakeup — i.e. `await queue.enqueue(x)` on
+  // a full queue would silently lose x. That is the opposite of backpressure and
+  // it directly contradicts the existing test 'should block enqueue when queue is
+  // full', which requires the blocked item to be inserted after one dequeue.
+  //
+  // The defect underneath (no cancellation) is real and is fixed. The test now
+  // uses the mechanism that actually conveys "I gave up" — an AbortSignal — and
+  // pins the uncancelled case to the only behaviour backpressure permits.
+  test('an aborted enqueue never inserts its item', async () => {
     const q = new AsyncQueue<string>(1);
     await q.enqueue('A');                       // full
 
-    // Caller gives up on this enqueue after 20ms.
+    const controller = new AbortController();
     const outcome = await Promise.race([
-      q.enqueue('GHOST').then(() => 'enqueued', () => 'rejected'),
-      sleep(20).then(() => 'TIMEOUT')
+      q.enqueue('GHOST', { signal: controller.signal }).then(() => 'enqueued', (e: Error) => `rejected:${e.name}`),
+      sleep(20).then(() => { controller.abort(); return 'TIMEOUT'; })
     ]);
     expect(outcome).toBe('TIMEOUT');
+    expect(q.waitingProducerCount).toBe(0);     // the waiter is gone, not merely ignored
 
-    // Consumer drains. The abandoned producer wakes up and inserts 'GHOST'
-    // even though its caller has long since moved on.
+    // Consumer drains. The aborted producer must NOT insert 'GHOST'.
     expect(await q.dequeue()).toBe('A');
     await sleep(10);
-    expect(q.size).toBe(0);                     // nothing should have been inserted
+    expect(q.size).toBe(0);
+    expect(q.waitingProducerCount).toBe(0);
+  });
+
+  test('an aborted enqueue rejects with AbortError and does not consume a slot', async () => {
+    const q = new AsyncQueue<string>(1);
+    await q.enqueue('A');
+
+    const controller = new AbortController();
+    const aborted = q.enqueue('GHOST', { signal: controller.signal });
+    const after = q.enqueue('REAL');            // queued behind GHOST
+    await sleep(5);
+    expect(q.waitingProducerCount).toBe(2);
+
+    controller.abort();
+    await expect(aborted).rejects.toThrow(/aborted/i);
+    expect(q.waitingProducerCount).toBe(1);     // only REAL is still waiting
+
+    // The freed slot goes to REAL, skipping the cancelled waiter entirely.
+    expect(await q.dequeue()).toBe('A');
+    await after;
+    expect(await q.dequeue()).toBe('REAL');
+    expect(q.size).toBe(0);
+  });
+
+  test('WITHOUT a signal, a blocked enqueue still inserts — that is backpressure, not a bug', async () => {
+    const q = new AsyncQueue<string>(1);
+    await q.enqueue('A');
+
+    const outcome = await Promise.race([
+      q.enqueue('LATER').then(() => 'enqueued', () => 'rejected'),
+      sleep(20).then(() => 'TIMEOUT')
+    ]);
+    expect(outcome).toBe('TIMEOUT');            // Promise.race did not cancel it
+
+    expect(await q.dequeue()).toBe('A');
+    await sleep(10);
+    expect(q.size).toBe(1);                     // 'LATER' was inserted, as it must be
+    expect(await q.dequeue()).toBe('LATER');
   });
 });
 
 describe('DEFECT: no cancellation — an abandoned async iterator cannot be released', () => {
-  test('generator.return() while suspended in dequeue() hangs until close()', async () => {
+  // REWRITTEN. The original asserted the HANG as correct:
+  //
+  //   const ret = it.return(undefined as any);
+  //   expect(await raceTimeout(ret.then(() => 'returned'), 60)).toBe('HUNG');
+  //   q.close();                                   // "the ONLY thing that can release it"
+  //   expect(await raceTimeout(ret.then(() => 'returned'), 100)).toBe('returned');
+  //
+  // That directly contradicts adversarial.test.ts:352 ('abandoning an in-flight
+  // iterator .next() leaves a phantom waiter'), which requires the very same
+  // it.return() to resolve within 100ms and to leave waitingConsumerCount at 0.
+  // No implementation can satisfy both. Prompt release is the correct half — a
+  // consumer that has given up must not pin a slot in the wake queue until
+  // close(), which is the whole of D3 — so this test now pins the fix.
+  //
+  // The hang was structural: `async function*` cannot process a queued return()
+  // while suspended at an `await`. The iterator is therefore hand-written and
+  // owns its waiter, so return() can cancel it directly.
+  test('generator.return() while suspended in dequeue() releases immediately', async () => {
     const q = new AsyncQueue<number>(4);
     const it = q.iterate()[Symbol.asyncIterator]() as AsyncGenerator<number>;
     const pending = it.next();
     await sleep(5);
+    expect(q.waitingConsumerCount).toBe(1);
 
     const ret = it.return(undefined as any);
-    expect(await raceTimeout(ret.then(() => 'returned'), 60)).toBe('HUNG');
+    expect(await raceTimeout(ret.then(() => 'returned'), 60)).toBe('returned');
 
-    // Proof that close() is the ONLY thing that can release it:
-    q.close();
-    expect(await raceTimeout(ret.then(() => 'returned'), 100)).toBe('returned');
-    await pending;
+    // No close() needed, and no waiter left behind.
+    await sleep(5);
+    expect(q.waitingConsumerCount).toBe(0);
+
+    // The abandoned next() settles as end-of-iteration rather than rejecting,
+    // so an unobserved next() promise cannot become an unhandled rejection.
+    expect(await raceTimeout(pending, 100)).toEqual({ done: true, value: undefined });
+
+    // The queue itself is untouched and still usable.
+    expect(q.isClosed).toBe(false);
+    await q.enqueue(1);
+    expect(await q.dequeue()).toBe(1);
+  });
+
+  test('breaking out of for-await-of releases the waiter without closing the queue', async () => {
+    const q = new AsyncQueue<number>(4);
+    const seen: number[] = [];
+
+    const loop = (async () => {
+      for await (const v of q) {
+        seen.push(v);
+        if (v === 2) break;
+      }
+    })();
+
+    await q.enqueue(1);
+    await q.enqueue(2);
+    await raceTimeout(loop, 500);
+
+    expect(seen).toEqual([1, 2]);
+    expect(q.waitingConsumerCount).toBe(0);
+    expect(q.isClosed).toBe(false);
   });
 });
 

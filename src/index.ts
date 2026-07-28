@@ -10,9 +10,40 @@
  */
 
 /**
- * Promise resolver function type
+ * State shared by every suspended caller, producer or consumer.
+ *
+ * `cancelled` waiters keep their slot in the FIFO ring until the next scan
+ * reaches them — removing them eagerly would be O(n). They are skipped, so a
+ * cancelled waiter never consumes a wakeup.
  */
-type PromiseResolver = () => void;
+interface Waiter {
+  cancelled: boolean;
+  settled: boolean;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+}
+
+/** A consumer suspended inside dequeue()/dequeueResult()/the async iterator. */
+interface ConsumerWaiter<T> extends Waiter {
+  readonly promise: Promise<DequeueResult<T>>;
+  readonly resolve: (result: DequeueResult<T>) => void;
+  readonly reject: (reason: unknown) => void;
+}
+
+/**
+ * A producer suspended inside enqueue().
+ *
+ * The item travels WITH the waiter rather than being inserted by the producer
+ * after it wakes. Whoever frees a slot moves the item into the buffer and then
+ * settles the producer, so the transfer is atomic: a cancelled producer is
+ * skipped before its item can ever reach the buffer.
+ */
+interface ProducerWaiter<T> extends Waiter {
+  item: T;
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (reason: unknown) => void;
+}
 
 /**
  * Largest capacity an AsyncQueue can be created with.
@@ -60,6 +91,44 @@ export type DequeueResult<T> =
 /** Shared end-of-stream result. Frozen so callers cannot corrupt it. */
 const DONE: DequeueResult<never> = Object.freeze({ done: true as const, value: undefined });
 
+/** Shared end-of-iteration result for the async iterator. */
+const ITERATOR_DONE = Object.freeze({ done: true, value: undefined }) as IteratorReturnResult<undefined>;
+
+/**
+ * Options accepted by {@link AsyncQueue.enqueue}, {@link AsyncQueue.dequeue} and
+ * {@link AsyncQueue.dequeueResult}.
+ */
+export interface AbortOptions {
+  /**
+   * Cancels the call if it has to suspend.
+   *
+   * Aborting removes the waiter from the queue *before* it can take part in any
+   * handoff, so a cancelled consumer never absorbs an item and a cancelled
+   * producer never inserts one. The returned promise rejects with
+   * `signal.reason`, or with an `Error` whose `name` is `'AbortError'` when the
+   * runtime does not populate `reason`.
+   *
+   * Without a signal there is no way for the queue to learn that a caller walked
+   * away: `Promise.race([queue.dequeue(), timeout])` leaves a live waiter that
+   * still occupies its place in line. Pass a signal whenever a dequeue or
+   * enqueue may be abandoned.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * Builds the rejection reason for an aborted operation.
+ * `AbortSignal.reason` only exists on newer runtimes, so fall back to a
+ * conventional `AbortError`.
+ */
+function abortReason(signal: AbortSignal): unknown {
+  const reason = (signal as { reason?: unknown }).reason;
+  if (reason !== undefined) return reason;
+  const error = new Error('The operation was aborted');
+  error.name = 'AbortError';
+  return error;
+}
+
 /**
  * Options accepted by the {@link AsyncQueue} constructor.
  *
@@ -99,10 +168,17 @@ export class AsyncQueue<T = any> {
   private tail = 0;  // Index where we enqueue to
   private count = 0; // Number of items in queue
 
-  // Waiting queues with reserved capacity - never shrink, only grow
-  private waitingConsumers: (PromiseResolver | undefined)[] = [];
+  // Waiting queues with reserved capacity - never shrink, only grow.
+  // FIFO: `*Head` is the index of the oldest entry, `*Slots` the number of
+  // physical entries from it (cancelled ones included), `waiting*Count` the
+  // number of LIVE entries, which is what the public getters report.
+  private readonly waitingConsumers: (ConsumerWaiter<T> | undefined)[] = [];
+  private consumersHead = 0;
+  private consumersSlots = 0;
   private waitingConsumersCount = 0;
-  private waitingProducers: (PromiseResolver | undefined)[] = [];
+  private readonly waitingProducers: (ProducerWaiter<T> | undefined)[] = [];
+  private producersHead = 0;
+  private producersSlots = 0;
   private waitingProducersCount = 0;
   private readonly INITIAL_WAITING_CAPACITY = 16;
 
@@ -182,37 +258,229 @@ export class AsyncQueue<T = any> {
     this.head = (this.head + 1) & (this.buffer.length - 1);
     this.count--;
 
-    // WAKE MECHANISM: If any producer is waiting for space, wake ONE
-    // Uses LIFO (stack) for O(1) performance - order doesn't affect correctness
+    // PROMOTION: a slot just opened, so move the longest-waiting producer's item
+    // into it and release that producer. Doing the insert here (rather than
+    // letting the producer re-enter enqueue() after waking) is what makes the
+    // transfer atomic - there is no window in which a woken producer could
+    // insert out of order, and a cancelled producer is skipped entirely.
     if (this.waitingProducersCount > 0) {
-      const producer = this.popWaiter(this.waitingProducers, this.waitingProducersCount);
-      this.waitingProducersCount--;
-      producer?.(); // Calling resolve() wakes the awaiting producer
+      const producer = this.popProducer();
+      if (producer !== undefined) {
+        this.addToBuffer(producer.item);
+        producer.item = undefined as T; // Help GC
+        this.settleProducer(producer);
+      }
     }
 
     return item;
   }
 
   /**
-   * Pushes a resolver onto a waiting queue with capacity management
+   * Makes room for one more entry at `head + slots`, and returns the new head.
+   *
+   * Reserved capacity is preserved: the array only ever grows. When there is
+   * dead space below `head` and the live entries occupy at most half the array,
+   * the entries slide back to index 0 instead of doubling. Both branches leave
+   * at least half the array free at the tail, so pushes stay O(1) amortised.
    */
-  private pushWaiter(queue: (PromiseResolver | undefined)[], count: number, resolver: PromiseResolver): number {
-    // Grow capacity if needed (double the size)
-    if (count >= queue.length) {
-      queue.length = queue.length * 2;
+  private static ensureRoom(queue: unknown[], head: number, slots: number): number {
+    if (head + slots < queue.length) {
+      return head;
     }
-    queue[count] = resolver;
-    return count + 1;
+    if (slots * 2 <= queue.length) {
+      for (let i = 0; i < slots; i++) {
+        queue[i] = queue[head + i];
+      }
+      for (let i = slots; i < head + slots; i++) {
+        queue[i] = undefined; // Help GC
+      }
+      return 0;
+    }
+    queue.length = queue.length * 2;
+    return head;
   }
 
   /**
-   * Pops a resolver from a waiting queue (LIFO)
+   * Detaches a waiter's abort listener, if it has one.
    */
-  private popWaiter(queue: (PromiseResolver | undefined)[], count: number): PromiseResolver | undefined {
-    if (count === 0) return undefined;
-    const resolver = queue[count - 1];
-    queue[count - 1] = undefined; // Help GC
-    return resolver;
+  private static detach(waiter: Waiter): void {
+    if (waiter.signal !== undefined && waiter.onAbort !== undefined) {
+      waiter.signal.removeEventListener('abort', waiter.onAbort);
+      waiter.signal = undefined;
+      waiter.onAbort = undefined;
+    }
+  }
+
+  /**
+   * Suspends a consumer and registers it at the BACK of the FIFO queue.
+   */
+  private pushConsumer(signal: AbortSignal | undefined): ConsumerWaiter<T> {
+    let resolve!: (result: DequeueResult<T>) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<DequeueResult<T>>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    const waiter: ConsumerWaiter<T> = { promise, resolve, reject, cancelled: false, settled: false };
+
+    this.consumersHead = AsyncQueue.ensureRoom(this.waitingConsumers, this.consumersHead, this.consumersSlots);
+    this.waitingConsumers[this.consumersHead + this.consumersSlots] = waiter;
+    this.consumersSlots++;
+    this.waitingConsumersCount++;
+
+    if (signal !== undefined) {
+      const onAbort = (): void => {
+        if (waiter.settled) return;
+        waiter.settled = true;
+        waiter.cancelled = true;
+        this.waitingConsumersCount--;
+        AsyncQueue.detach(waiter);
+        waiter.reject(abortReason(signal));
+      };
+      waiter.signal = signal;
+      waiter.onAbort = onAbort;
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    return waiter;
+  }
+
+  /**
+   * Suspends a producer, holding its item, at the BACK of the FIFO queue.
+   */
+  private pushProducer(item: T, signal: AbortSignal | undefined): ProducerWaiter<T> {
+    let resolve!: () => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    const waiter: ProducerWaiter<T> = { item, promise, resolve, reject, cancelled: false, settled: false };
+
+    this.producersHead = AsyncQueue.ensureRoom(this.waitingProducers, this.producersHead, this.producersSlots);
+    this.waitingProducers[this.producersHead + this.producersSlots] = waiter;
+    this.producersSlots++;
+    this.waitingProducersCount++;
+
+    if (signal !== undefined) {
+      const onAbort = (): void => {
+        if (waiter.settled) return;
+        waiter.settled = true;
+        waiter.cancelled = true;
+        this.waitingProducersCount--;
+        AsyncQueue.detach(waiter);
+        // Release the item: a cancelled producer must never insert it later.
+        waiter.item = undefined as T;
+        waiter.reject(abortReason(signal));
+      };
+      waiter.signal = signal;
+      waiter.onAbort = onAbort;
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    return waiter;
+  }
+
+  /**
+   * Removes and returns the oldest LIVE consumer, discarding cancelled ones on
+   * the way. FIFO: the caller who has been waiting longest is served first.
+   */
+  private popConsumer(): ConsumerWaiter<T> | undefined {
+    while (this.consumersSlots > 0) {
+      const waiter = this.waitingConsumers[this.consumersHead] as ConsumerWaiter<T>;
+      this.waitingConsumers[this.consumersHead] = undefined; // Help GC
+      this.consumersHead++;
+      this.consumersSlots--;
+      if (this.consumersSlots === 0) {
+        this.consumersHead = 0;
+      }
+      if (!waiter.cancelled) {
+        this.waitingConsumersCount--;
+        return waiter;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Removes and returns the oldest LIVE producer, discarding cancelled ones on
+   * the way. FIFO: items enter the buffer in the order their producers called
+   * enqueue(), which is what "strict FIFO" has to mean once producers block.
+   */
+  private popProducer(): ProducerWaiter<T> | undefined {
+    while (this.producersSlots > 0) {
+      const waiter = this.waitingProducers[this.producersHead] as ProducerWaiter<T>;
+      this.waitingProducers[this.producersHead] = undefined; // Help GC
+      this.producersHead++;
+      this.producersSlots--;
+      if (this.producersSlots === 0) {
+        this.producersHead = 0;
+      }
+      if (!waiter.cancelled) {
+        this.waitingProducersCount--;
+        return waiter;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Hands an item to a suspended consumer.
+   */
+  private settleConsumer(waiter: ConsumerWaiter<T>, item: T): void {
+    waiter.settled = true;
+    AsyncQueue.detach(waiter);
+    waiter.resolve({ done: false, value: item });
+  }
+
+  /**
+   * Releases a suspended consumer with end-of-stream.
+   */
+  private settleConsumerDone(waiter: ConsumerWaiter<T>): void {
+    waiter.settled = true;
+    AsyncQueue.detach(waiter);
+    waiter.resolve(DONE);
+  }
+
+  /**
+   * Cancels a suspended consumer *without* rejecting it.
+   *
+   * Used by the async iterator's `return()`. The pending `next()` promise is
+   * frequently unobserved at that point, so it is resolved with end-of-stream
+   * rather than rejected — a rejection there would be exactly the kind of
+   * unhandled rejection D1 exists to prevent.
+   */
+  private cancelConsumer(waiter: ConsumerWaiter<T>): void {
+    if (waiter.settled) return;
+    waiter.settled = true;
+    waiter.cancelled = true;
+    this.waitingConsumersCount--;
+    AsyncQueue.detach(waiter);
+    waiter.resolve(DONE);
+  }
+
+  /**
+   * Releases a suspended producer whose item has just been buffered.
+   */
+  private settleProducer(waiter: ProducerWaiter<T>): void {
+    waiter.settled = true;
+    AsyncQueue.detach(waiter);
+    waiter.resolve();
+  }
+
+  /**
+   * Rejects a suspended producer because the queue closed underneath it.
+   * Its item is dropped, and the rejection is pre-marked as handled (see D1).
+   */
+  private rejectProducerClosed(waiter: ProducerWaiter<T>): void {
+    const error = new Error('Queue is closed');
+    const item = waiter.item;
+    waiter.settled = true;
+    waiter.item = undefined as T; // Help GC
+    AsyncQueue.detach(waiter);
+    waiter.reject(error);
+    waiter.promise.catch(NOOP);
+    this.reportDropped(error, item);
   }
 
   /**
@@ -264,86 +532,46 @@ export class AsyncQueue<T = any> {
    * Consequence: if you neither await nor `.catch()` the returned promise, a
    * dropped item is now silent rather than fatal. Pass `onDropped` to the
    * constructor to observe drops globally.
+   *
+   * @param options Optional `{ signal }` to cancel the call while it is blocked,
+   *                see {@link AbortOptions}
    */
-  enqueue(item: T): Promise<void> {
+  enqueue(item: T, options?: AbortOptions): Promise<void> {
     // Prevent new items after close() to ensure clean shutdown
     if (this.closed) {
       return this.rejectEnqueue(new Error('Queue is closed'), item);
     }
 
-    // FAST PATH: space available, no suspension, no extra promise allocation.
-    if (this.count < this.maxSize) {
-      this.deliver(item);
+    // DIRECT HANDOFF: a consumer is already waiting, so skip the buffer entirely
+    // and give it the item. A consumer can only be waiting while count === 0, so
+    // this preserves FIFO. It is also the only way an abandoned-but-live waiter
+    // cannot silently stall a queue that is otherwise making progress.
+    const consumer = this.popConsumer();
+    if (consumer !== undefined) {
+      this.settleConsumer(consumer, item);
       return RESOLVED;
     }
 
-    // SLOW PATH: the producer must block, which means this promise can reject
-    // later (from close()). Guard it now, while we still hold the reference.
-    const pending = this.enqueueBlocking(item);
-    pending.catch((error: Error) => this.reportDropped(error, item));
-    return pending;
-  }
-
-  /**
-   * The suspending half of {@link enqueue}. Only entered when the queue is full.
-   */
-  private async enqueueBlocking(item: T): Promise<void> {
-    // BLOCKING MECHANISM: Wait if queue is at capacity
-    // This implements backpressure - fast producers slow down to match consumers
-    while (this.count >= this.maxSize && !this.closed) {
-      // Create unresolved Promise, store only the resolve function
-      // This suspends the producer until a consumer makes space
-      await new Promise<void>(resolve => {
-        this.waitingProducersCount = this.pushWaiter(this.waitingProducers, this.waitingProducersCount, resolve);
-      });
-
-      // Check again after waking - queue might have been closed while waiting
-      if (this.closed) {
-        throw new Error('Queue is closed');
-      }
+    // FAST PATH: space available, no suspension, no extra promise allocation.
+    if (this.count < this.maxSize) {
+      this.addToBuffer(item);
+      return RESOLVED;
     }
 
-    this.deliver(item);
-  }
-
-  /**
-   * Places an item in the buffer and wakes one waiting consumer, if any.
-   * Callers must have already established that there is room.
-   */
-  private deliver(item: T): void {
-    // Add item to circular buffer (we now have space)
-    this.addToBuffer(item);
-
-    // WAKE MECHANISM: If any consumer is waiting for an item, wake ONE
-    // Uses LIFO (stack) for O(1) performance - order doesn't affect correctness
-    if (this.waitingConsumersCount > 0) {
-      const consumer = this.popWaiter(this.waitingConsumers, this.waitingConsumersCount);
-      this.waitingConsumersCount--;
-      consumer?.(); // Calling resolve() wakes the awaiting consumer
+    // BLOCKING PATH: backpressure. The item rides along inside the waiter and is
+    // inserted by whoever frees a slot; see takeFromBuffer().
+    const signal = options?.signal;
+    if (signal !== undefined && signal.aborted) {
+      return Promise.reject(abortReason(signal));
     }
-  }
-
-  /**
-   * BLOCKING MECHANISM: returns a promise that settles when a producer adds an
-   * item or the queue closes.
-   *
-   * Deliberately NOT an `async` helper that loops internally. An extra async
-   * frame costs an extra microtask hop between "a wakeup arrived" and "the item
-   * is taken", and another consumer can drain the buffer inside that gap. The
-   * caller must therefore re-check `count` in its own frame — see the `while`
-   * loops in {@link dequeue} and {@link dequeueResult}.
-   */
-  private parkConsumer(): Promise<void> {
-    // Create unresolved Promise, store only the resolve function
-    // This suspends the consumer until a producer adds an item
-    return new Promise<void>(resolve => {
-      this.waitingConsumersCount = this.pushWaiter(this.waitingConsumers, this.waitingConsumersCount, resolve);
-    });
+    return this.pushProducer(item, signal).promise;
   }
 
   /**
    * Removes and returns the oldest item from the queue. Blocks if the queue is empty.
    *
+   * @param options Optional `{ signal }` to cancel the call while it is blocked,
+   *                see {@link AbortOptions}
    * @returns A promise that resolves to the item, or `undefined` if the queue is
    *          closed and empty
    *
@@ -351,24 +579,35 @@ export class AsyncQueue<T = any> {
    * next item genuinely is `undefined`". If `T` can be `undefined`, use
    * {@link dequeueResult} instead — every other consumer entry point
    * (`for await`, {@link drain}, {@link take}) already does.
+   *
+   * There is no re-check loop any more: a suspended consumer is handed its item
+   * directly, so it cannot wake up to find that another consumer got there first.
    */
-  async dequeue(): Promise<T | undefined> {
-    while (this.count === 0) {
-      // Nothing buffered and nothing more coming: end of stream.
-      if (this.closed) {
-        return undefined;
-      }
-      await this.parkConsumer();
+  async dequeue(options?: AbortOptions): Promise<T | undefined> {
+    // Remove and get the oldest item from circular buffer (FIFO order)
+    if (this.count > 0) {
+      return this.takeFromBuffer();
+    }
+    // Nothing buffered and nothing more coming: end of stream.
+    if (this.closed) {
+      return undefined;
     }
 
-    // Remove and get the oldest item from circular buffer (FIFO order)
-    return this.takeFromBuffer();
+    const signal = options?.signal;
+    if (signal !== undefined && signal.aborted) {
+      throw abortReason(signal);
+    }
+
+    const result = await this.pushConsumer(signal).promise;
+    return result.done ? undefined : result.value;
   }
 
   /**
    * Removes and returns the oldest item, distinguishing "end of stream" from a
    * payload that happens to be `undefined`. Blocks if the queue is empty.
    *
+   * @param options Optional `{ signal }` to cancel the call while it is blocked,
+   *                see {@link AbortOptions}
    * @returns `{ done: true }` once the queue is closed and drained, otherwise
    *          `{ done: false, value }` where `value` may be any `T` — `undefined`
    *          included
@@ -380,15 +619,20 @@ export class AsyncQueue<T = any> {
    * handle(result.value);           // may legitimately be undefined
    * ```
    */
-  async dequeueResult(): Promise<DequeueResult<T>> {
-    while (this.count === 0) {
-      if (this.closed) {
-        return DONE;
-      }
-      await this.parkConsumer();
+  async dequeueResult(options?: AbortOptions): Promise<DequeueResult<T>> {
+    if (this.count > 0) {
+      return { done: false, value: this.takeFromBuffer() };
+    }
+    if (this.closed) {
+      return DONE;
     }
 
-    return { done: false, value: this.takeFromBuffer() };
+    const signal = options?.signal;
+    if (signal !== undefined && signal.aborted) {
+      throw abortReason(signal);
+    }
+
+    return this.pushConsumer(signal).promise;
   }
 
   /**
@@ -396,25 +640,32 @@ export class AsyncQueue<T = any> {
    * Existing items can still be consumed.
    */
   close(): void {
+    // Idempotent. After the first call no new waiter can be created: enqueue()
+    // and both dequeue paths check `closed` before they suspend, and close() is
+    // synchronous, so nothing can interleave.
+    if (this.closed) {
+      return;
+    }
+
     // Signal that no more items will be added
     // Existing items can still be consumed
     this.closed = true;
 
-    // Wake ALL waiting consumers - they'll return undefined
+    // Release ALL waiting consumers with end-of-stream
     // This allows graceful shutdown where all consumers exit cleanly
-    for (let i = 0; i < this.waitingConsumersCount; i++) {
-      this.waitingConsumers[i]?.();
-      this.waitingConsumers[i] = undefined; // Help GC
+    for (;;) {
+      const consumer = this.popConsumer();
+      if (consumer === undefined) break;
+      this.settleConsumerDone(consumer);
     }
-    this.waitingConsumersCount = 0;
 
-    // Wake ALL waiting producers - they'll throw an error
+    // Reject ALL waiting producers - their items are dropped
     // This prevents deadlock where producers wait forever
-    for (let i = 0; i < this.waitingProducersCount; i++) {
-      this.waitingProducers[i]?.();
-      this.waitingProducers[i] = undefined; // Help GC
+    for (;;) {
+      const producer = this.popProducer();
+      if (producer === undefined) break;
+      this.rejectProducerClosed(producer);
     }
-    this.waitingProducersCount = 0;
   }
 
   /**
@@ -498,16 +749,69 @@ export class AsyncQueue<T = any> {
    * }
    * ```
    */
-  async *[Symbol.asyncIterator](): AsyncIterator<T> {
-    for (;;) {
-      // dequeueResult(), not dequeue(): an item whose value is `undefined` must
-      // not be mistaken for the end of the stream.
-      const result = await this.dequeueResult();
-      if (result.done) {
-        break;
+  [Symbol.asyncIterator](): AsyncIterableIterator<T> {
+    const queue = this;
+    let finished = false;
+    let pending: ConsumerWaiter<T> | null = null;
+
+    // Hand-written rather than an `async function*`. A generator suspended at an
+    // `await` cannot process a queued `return()` until that await settles, so an
+    // abandoned iterator would pin a waiter until close(). Owning the waiter
+    // directly lets return()/throw() cancel it immediately.
+    const release = (): void => {
+      finished = true;
+      if (pending !== null) {
+        const waiter = pending;
+        pending = null;
+        queue.cancelConsumer(waiter);
       }
-      yield result.value;
-    }
+    };
+
+    const iterator: AsyncIterableIterator<T> = {
+      [Symbol.asyncIterator](): AsyncIterableIterator<T> {
+        return iterator;
+      },
+
+      next(): Promise<IteratorResult<T>> {
+        if (finished) {
+          return Promise.resolve(ITERATOR_DONE);
+        }
+        // Read `count` directly, not dequeue(): an item whose value is
+        // `undefined` must not be mistaken for the end of the stream.
+        if (queue.count > 0) {
+          return Promise.resolve({ done: false, value: queue.takeFromBuffer() });
+        }
+        if (queue.closed) {
+          finished = true;
+          return Promise.resolve(ITERATOR_DONE);
+        }
+
+        const waiter = queue.pushConsumer(undefined);
+        pending = waiter;
+        return waiter.promise.then((result): IteratorResult<T> => {
+          if (pending === waiter) {
+            pending = null;
+          }
+          if (result.done) {
+            finished = true;
+            return ITERATOR_DONE;
+          }
+          return { done: false, value: result.value };
+        });
+      },
+
+      return(value?: unknown): Promise<IteratorResult<T>> {
+        release();
+        return Promise.resolve({ done: true, value } as IteratorReturnResult<unknown>);
+      },
+
+      throw(error?: unknown): Promise<IteratorResult<T>> {
+        release();
+        return Promise.reject(error);
+      }
+    };
+
+    return iterator;
   }
 
   /**

@@ -179,3 +179,217 @@ describe('D2: undefined must not double as the end-of-stream sentinel', () => {
     expect(await q.dequeue()).toBeUndefined();   // end of stream, as before
   });
 });
+
+describe('D3: cancellation — a cancelled waiter neither consumes a wake nor inserts', () => {
+  test('a cancelled consumer does not absorb the next item', async () => {
+    const q = new AsyncQueue<string>(4);
+    const controller = new AbortController();
+
+    const cancelled = q.dequeue({ signal: controller.signal });
+    await sleep(1);
+    const live = q.dequeue();                 // registered SECOND, so FIFO would serve it last
+    await sleep(1);
+    expect(q.waitingConsumerCount).toBe(2);
+
+    controller.abort();
+    await expect(cancelled).rejects.toThrow(/aborted/i);
+    expect(q.waitingConsumerCount).toBe(1);   // released immediately, not lazily
+
+    await q.enqueue('X');
+    expect(await live).toBe('X');             // the wake was not consumed by the corpse
+    expect(q.size).toBe(0);
+  });
+
+  test('a cancelled consumer in the MIDDLE of the queue is skipped', async () => {
+    const q = new AsyncQueue<number>(8);
+    const controller = new AbortController();
+
+    const first = q.dequeue();
+    await sleep(1);
+    const middle = q.dequeue({ signal: controller.signal });
+    await sleep(1);
+    const last = q.dequeue();
+    await sleep(1);
+    expect(q.waitingConsumerCount).toBe(3);
+
+    controller.abort();
+    await expect(middle).rejects.toThrow(/aborted/i);
+    expect(q.waitingConsumerCount).toBe(2);
+
+    await q.enqueue(1);
+    await q.enqueue(2);
+    expect(await first).toBe(1);
+    expect(await last).toBe(2);
+    expect(q.waitingConsumerCount).toBe(0);
+  });
+
+  test('a cancelled producer never inserts its item', async () => {
+    const q = new AsyncQueue<string>(1);
+    await q.enqueue('A');
+    const controller = new AbortController();
+
+    const cancelled = q.enqueue('GHOST', { signal: controller.signal });
+    await sleep(1);
+    expect(q.waitingProducerCount).toBe(1);
+
+    controller.abort();
+    await expect(cancelled).rejects.toThrow(/aborted/i);
+    expect(q.waitingProducerCount).toBe(0);
+
+    expect(await q.dequeue()).toBe('A');
+    await sleep(5);
+    expect(q.size).toBe(0);                   // GHOST never reached the buffer
+
+    // The queue is still fully usable afterwards.
+    await q.enqueue('B');
+    expect(await q.dequeue()).toBe('B');
+  });
+
+  test('an already-aborted signal rejects without ever registering a waiter', async () => {
+    const q = new AsyncQueue<number>(1);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(q.dequeue({ signal: controller.signal })).rejects.toThrow(/aborted/i);
+    expect(q.waitingConsumerCount).toBe(0);
+
+    await q.enqueue(1);                       // fill it so the next enqueue must block
+    await expect(q.enqueue(2, { signal: controller.signal })).rejects.toThrow(/aborted/i);
+    expect(q.waitingProducerCount).toBe(0);
+    expect(q.size).toBe(1);
+  });
+
+  test('a signal is only consulted when the call actually has to block', async () => {
+    const q = new AsyncQueue<number>(4);
+    const controller = new AbortController();
+    controller.abort();
+
+    // Room available -> never suspends -> the aborted signal is irrelevant.
+    await expect(q.enqueue(1, { signal: controller.signal })).resolves.toBeUndefined();
+    // Item available -> never suspends -> likewise.
+    expect(await q.dequeue({ signal: controller.signal })).toBe(1);
+  });
+
+  test('signal.reason is used as the rejection reason when present', async () => {
+    const q = new AsyncQueue<number>(4);
+    const controller = new AbortController();
+    const reason = new Error('caller gave up');
+
+    const pending = q.dequeue({ signal: controller.signal });
+    await sleep(1);
+    controller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+  });
+
+  test('aborting after the call already settled is a no-op', async () => {
+    const q = new AsyncQueue<number>(4);
+    const controller = new AbortController();
+
+    const pending = q.dequeue({ signal: controller.signal });
+    await sleep(1);
+    await q.enqueue(42);
+    expect(await pending).toBe(42);
+    expect(q.waitingConsumerCount).toBe(0);
+
+    controller.abort();                       // listener must already be detached
+    await sleep(5);
+    expect(q.waitingConsumerCount).toBe(0);
+    await q.enqueue(43);
+    expect(await q.dequeue()).toBe(43);
+  });
+
+  test('dequeueResult() honours the same signal contract', async () => {
+    const q = new AsyncQueue<number>(4);
+    const controller = new AbortController();
+    const pending = q.dequeueResult({ signal: controller.signal });
+    await sleep(1);
+    controller.abort();
+    await expect(pending).rejects.toThrow(/aborted/i);
+    expect(q.waitingConsumerCount).toBe(0);
+  });
+});
+
+describe('D5/D6: FIFO across blocked producers and consumers', () => {
+  test('blocked producers are woken in call order', async () => {
+    const q = new AsyncQueue<number>(1);
+    await q.enqueue(0);
+
+    const pending = [1, 2, 3, 4, 5].map(async n => { await q.enqueue(n); return n; });
+    await sleep(5);
+    expect(q.waitingProducerCount).toBe(5);
+
+    const out: number[] = [];
+    for (let i = 0; i < 6; i++) out.push((await q.dequeue())!);
+    await Promise.all(pending);
+    expect(out).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  test('waiting consumers are served in call order', async () => {
+    const q = new AsyncQueue<number>(4);
+    const order: number[] = [];
+    const consumers = [0, 1, 2, 3].map(async id => {
+      const v = await q.dequeue();
+      order.push(id);
+      return v;
+    });
+    await sleep(5);
+    expect(q.waitingConsumerCount).toBe(4);
+
+    for (let i = 10; i < 14; i++) await q.enqueue(i);
+    expect(await Promise.all(consumers)).toEqual([10, 11, 12, 13]);
+    expect(order).toEqual([0, 1, 2, 3]);
+  });
+
+  test('the earliest blocked producer is not starved by later arrivals', async () => {
+    const q = new AsyncQueue<string>(1);
+    await q.enqueue('seed');
+
+    let firstDone = false;
+    const first = q.enqueue('FIRST').then(() => { firstDone = true; });
+
+    let stop = false;
+    const inflight: Promise<void>[] = [];
+    const churn = (async () => {
+      while (!stop) { inflight.push(q.enqueue('later').catch(() => {})); await sleep(0); }
+    })();
+    const drainer = (async () => {
+      while (!stop) { await q.dequeue(); await sleep(0); }
+    })();
+
+    await sleep(200);
+    expect(firstDone).toBe(true);
+
+    stop = true;
+    await sleep(10);
+    q.close();
+    await Promise.allSettled([first, churn, drainer, ...inflight]);
+  });
+});
+
+describe('direct handoff', () => {
+  test('an item goes straight to a waiting consumer without touching the buffer', async () => {
+    const q = new AsyncQueue<number>(4);
+    const waiting = q.dequeue();
+    await sleep(1);
+    expect(q.waitingConsumerCount).toBe(1);
+
+    void q.enqueue(42);
+    expect(q.size).toBe(0);                   // never buffered
+    expect(await waiting).toBe(42);
+  });
+
+  test('handoff still respects capacity for the buffered path', async () => {
+    const q = new AsyncQueue<number>(2);
+    await q.enqueue(1);
+    await q.enqueue(2);
+    expect(q.isFull).toBe(true);
+    let settled = false;
+    const blocked = q.enqueue(3).then(() => { settled = true; });
+    await sleep(10);
+    expect(settled).toBe(false);
+    expect(q.size).toBe(2);
+    expect(await q.dequeue()).toBe(1);
+    await blocked;
+    expect(q.size).toBe(2);
+  });
+});
