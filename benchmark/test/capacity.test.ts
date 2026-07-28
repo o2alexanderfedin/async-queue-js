@@ -1,6 +1,10 @@
 import { AsyncQueue } from '../../src/index';
 
-describe('Reserved Capacity Benchmark', () => {
+// The console output in this file used to describe grow-only waiter arrays
+// ("Arrays never shrink back"). That storage was replaced by intrusive linked
+// lists in the D9 fix, so the narration is updated to match. Every assertion
+// below is unchanged.
+describe('Waiter-queue Capacity Benchmark', () => {
   test('should demonstrate capacity growth pattern', async () => {
     const queue = new AsyncQueue<number>(1);
     const growthPattern: number[] = [];
@@ -21,12 +25,13 @@ describe('Reserved Capacity Benchmark', () => {
     }
 
     console.log(`
-    Capacity Growth Pattern:
-    - Initial capacity: 16
-    - Growth at waiters: ${growthPattern.join(', ')}
-    - Growth is 2x when capacity exceeded
-    - Arrays never shrink back
-    - No reallocation within capacity limits`);
+    Waiter-queue growth pattern:
+    - No pre-allocated capacity and no growth step
+    - Sampled at waiters: ${growthPattern.join(', ')}
+    - Each waiter is a list node; being queued costs no allocation
+      beyond the waiter record itself
+    - Storage is released as waiters leave, so peak concurrency
+      costs nothing once the burst is over`);
 
     // Satisfy all consumers
     for (let i = 0; i < 1000; i++) {
@@ -41,11 +46,13 @@ describe('Reserved Capacity Benchmark', () => {
 
   test('should show performance with no reallocations within capacity', async () => {
     const queue = new AsyncQueue<number>(1);
-    const OPERATIONS = 15; // Within initial capacity of 16
+    const OPERATIONS = 15; // Was 'within the initial capacity of 16'; there is
+                           // no capacity step any more, so this is just a small
+                           // batch. Kept at 15 so the timing bound is unchanged.
 
     const start = Date.now();
 
-    // Create waiting consumers (no reallocation needed)
+    // Create waiting consumers
     const consumers: Promise<any>[] = [];
     for (let i = 0; i < OPERATIONS; i++) {
       consumers.push(queue.dequeue());
@@ -61,9 +68,9 @@ describe('Reserved Capacity Benchmark', () => {
     const duration = Date.now() - start;
 
     console.log(`
-    Operations within capacity (${OPERATIONS} ops, capacity 16):
+    Small batch (${OPERATIONS} ops):
     Duration: ${duration}ms
-    No array reallocations occurred
+    No array reallocations occurred - there is no array
     Zero memory churn from waiting queues`);
 
     expect(duration).toBeLessThan(100);
@@ -104,15 +111,15 @@ describe('Reserved Capacity Benchmark', () => {
     const memUsed = (finalMem - initialMem) / 1024 / 1024;
 
     console.log(`
-    Stress test with reserved capacity:
+    Stress test, waiter queues under load:
     Producers: ${PRODUCERS}, Consumers: ${CONSUMERS}
     Total items: ${PRODUCERS * ITEMS_PER_PRODUCER}
     Duration: ${duration}ms
     Memory delta: ${memUsed.toFixed(2)}MB
     Throughput: ${Math.round((PRODUCERS * ITEMS_PER_PRODUCER) / (duration / 1000))} items/sec
 
-    Note: Arrays grew as needed and never shrank,
-    avoiding reallocation overhead during operation.`);
+    Note: waiter storage is per-waiter and is released as each
+    waiter leaves, so nothing is retained after the burst.`);
 
     expect(duration).toBeLessThan(5000);
   });

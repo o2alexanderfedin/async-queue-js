@@ -12,12 +12,16 @@
 /**
  * State shared by every suspended caller, producer or consumer.
  *
- * `cancelled` waiters keep their slot in the FIFO ring until the next scan
- * reaches them — removing them eagerly would be O(n). They are skipped, so a
- * cancelled waiter never consumes a wakeup.
+ * Waiters are nodes of an intrusive doubly-linked list — the `prev`/`next`
+ * pointers live on the waiter itself, so being queued costs no allocation
+ * beyond the record that has to exist anyway. Being a *doubly*-linked list is
+ * what makes leaving the queue O(1) from any position, which is what lets an
+ * aborted or released waiter be unlinked the instant it gives up instead of
+ * being tombstoned and skipped later.
  */
 interface Waiter {
-  cancelled: boolean;
+  prev: Waiter | null;
+  next: Waiter | null;
   settled: boolean;
   signal?: AbortSignal;
   onAbort?: () => void;
@@ -25,6 +29,8 @@ interface Waiter {
 
 /** A consumer suspended inside dequeue()/dequeueResult()/the async iterator. */
 interface ConsumerWaiter<T> extends Waiter {
+  prev: ConsumerWaiter<T> | null;
+  next: ConsumerWaiter<T> | null;
   readonly promise: Promise<DequeueResult<T>>;
   readonly resolve: (result: DequeueResult<T>) => void;
   readonly reject: (reason: unknown) => void;
@@ -36,13 +42,92 @@ interface ConsumerWaiter<T> extends Waiter {
  * The item travels WITH the waiter rather than being inserted by the producer
  * after it wakes. Whoever frees a slot moves the item into the buffer and then
  * settles the producer, so the transfer is atomic: a cancelled producer is
- * skipped before its item can ever reach the buffer.
+ * unlinked before its item can ever reach the buffer.
  */
 interface ProducerWaiter<T> extends Waiter {
+  prev: ProducerWaiter<T> | null;
+  next: ProducerWaiter<T> | null;
   item: T;
   readonly promise: Promise<void>;
   readonly resolve: () => void;
   readonly reject: (reason: unknown) => void;
+}
+
+/**
+ * FIFO queue of suspended callers.
+ *
+ * Replaces a pair of grow-only arrays that were documented as "reserved
+ * capacity — never shrink, only grow". Measured cost of that design: 50,000
+ * transient producers left the backing array at 65,536 slots, still 65,536
+ * after a full drain, ~512 KiB of pointers retained for the lifetime of the
+ * queue, plus every cancelled-but-unreaped waiter record kept alive by a slot
+ * nobody would revisit until the next pop scan walked past it.
+ *
+ * A list has no backing store to retain: an unlinked node is unreachable and
+ * collectable immediately, so the high-water mark costs nothing once it passes.
+ * `size` is therefore exactly the number of live waiters at all times — there
+ * is no tombstone that could inflate it — which is what makes it usable as a
+ * health metric.
+ *
+ * @template W The waiter type held by this list. The `prev`/`next` constraint is
+ *             self-referential so that unlinking stays type-safe without casts.
+ */
+class WaiterList<W extends Waiter & { prev: W | null; next: W | null }> {
+  private head: W | null = null;
+  private tail: W | null = null;
+  size = 0;
+
+  /** True when at least one caller is suspended here. */
+  get nonEmpty(): boolean {
+    return this.head !== null;
+  }
+
+  /** Appends a waiter at the back. O(1). */
+  push(waiter: W): void {
+    const tail = this.tail;
+    waiter.prev = tail;
+    waiter.next = null;
+    if (tail === null) {
+      this.head = waiter;
+    } else {
+      tail.next = waiter;
+    }
+    this.tail = waiter;
+    this.size++;
+  }
+
+  /**
+   * Removes a waiter from anywhere in the list. O(1).
+   *
+   * The caller must not call this twice for the same waiter; every call site
+   * guards on the waiter's `settled` flag first.
+   */
+  remove(waiter: W): void {
+    const { prev, next } = waiter;
+    if (prev === null) {
+      this.head = next;
+    } else {
+      prev.next = next;
+    }
+    if (next === null) {
+      this.tail = prev;
+    } else {
+      next.prev = prev;
+    }
+    waiter.prev = null;
+    waiter.next = null;
+    this.size--;
+  }
+
+  /** Removes and returns the longest-waiting caller, or undefined. O(1). */
+  shift(): W | undefined {
+    const waiter = this.head;
+    if (waiter === null) {
+      return undefined;
+    }
+    this.remove(waiter);
+    return waiter;
+  }
 }
 
 /**
@@ -227,19 +312,11 @@ export class AsyncQueue<T = any> {
   private tail = 0;  // Index where we enqueue to
   private count = 0; // Number of items in queue
 
-  // Waiting queues with reserved capacity - never shrink, only grow.
-  // FIFO: `*Head` is the index of the oldest entry, `*Slots` the number of
-  // physical entries from it (cancelled ones included), `waiting*Count` the
-  // number of LIVE entries, which is what the public getters report.
-  private readonly waitingConsumers: (ConsumerWaiter<T> | undefined)[] = [];
-  private consumersHead = 0;
-  private consumersSlots = 0;
-  private waitingConsumersCount = 0;
-  private readonly waitingProducers: (ProducerWaiter<T> | undefined)[] = [];
-  private producersHead = 0;
-  private producersSlots = 0;
-  private waitingProducersCount = 0;
-  private readonly INITIAL_WAITING_CAPACITY = 16;
+  // FIFO queues of suspended callers. Intrusive linked lists: no backing array,
+  // so nothing is retained once a waiter leaves, and `.size` is exactly the
+  // number of live waiters (a waiter that gives up is unlinked, not tombstoned).
+  private readonly waitingConsumers = new WaiterList<ConsumerWaiter<T>>();
+  private readonly waitingProducers = new WaiterList<ProducerWaiter<T>>();
 
   private closed = false;
 
@@ -288,10 +365,6 @@ export class AsyncQueue<T = any> {
     // Round up to nearest power of 2
     const bufferSize = nextPowerOfTwo(this.maxSize);
     this.buffer = new Array(bufferSize);
-
-    // Pre-allocate initial capacity for waiting queues
-    this.waitingConsumers.length = this.INITIAL_WAITING_CAPACITY;
-    this.waitingProducers.length = this.INITIAL_WAITING_CAPACITY;
   }
 
   /**
@@ -321,44 +394,16 @@ export class AsyncQueue<T = any> {
     // into it and release that producer. Doing the insert here (rather than
     // letting the producer re-enter enqueue() after waking) is what makes the
     // transfer atomic - there is no window in which a woken producer could
-    // insert out of order, and a cancelled producer is skipped entirely.
-    // Tested against `producersSlots`, not the live count, so cancelled records
-    // are reaped here too instead of lingering in the ring.
-    if (this.producersSlots > 0) {
-      const producer = this.popProducer();
-      if (producer !== undefined) {
-        this.addToBuffer(producer.item);
-        producer.item = undefined as T; // Help GC
-        this.settleProducer(producer);
-      }
+    // insert out of order. A cancelled producer is never seen here at all: it
+    // unlinked itself the moment its signal fired.
+    const producer = this.waitingProducers.shift();
+    if (producer !== undefined) {
+      this.addToBuffer(producer.item);
+      producer.item = undefined as T; // Help GC
+      this.settleProducer(producer);
     }
 
     return item;
-  }
-
-  /**
-   * Makes room for one more entry at `head + slots`, and returns the new head.
-   *
-   * Reserved capacity is preserved: the array only ever grows. When there is
-   * dead space below `head` and the live entries occupy at most half the array,
-   * the entries slide back to index 0 instead of doubling. Both branches leave
-   * at least half the array free at the tail, so pushes stay O(1) amortised.
-   */
-  private static ensureRoom(queue: unknown[], head: number, slots: number): number {
-    if (head + slots < queue.length) {
-      return head;
-    }
-    if (slots * 2 <= queue.length) {
-      for (let i = 0; i < slots; i++) {
-        queue[i] = queue[head + i];
-      }
-      for (let i = slots; i < head + slots; i++) {
-        queue[i] = undefined; // Help GC
-      }
-      return 0;
-    }
-    queue.length = queue.length * 2;
-    return head;
   }
 
   /**
@@ -382,19 +427,17 @@ export class AsyncQueue<T = any> {
       resolve = res;
       reject = rej;
     });
-    const waiter: ConsumerWaiter<T> = { promise, resolve, reject, cancelled: false, settled: false };
+    const waiter: ConsumerWaiter<T> = { prev: null, next: null, promise, resolve, reject, settled: false };
 
-    this.consumersHead = AsyncQueue.ensureRoom(this.waitingConsumers, this.consumersHead, this.consumersSlots);
-    this.waitingConsumers[this.consumersHead + this.consumersSlots] = waiter;
-    this.consumersSlots++;
-    this.waitingConsumersCount++;
+    this.waitingConsumers.push(waiter);
 
     if (signal !== undefined) {
       const onAbort = (): void => {
         if (waiter.settled) return;
         waiter.settled = true;
-        waiter.cancelled = true;
-        this.waitingConsumersCount--;
+        // O(1) removal from the middle of the list: a caller that walked away
+        // stops being counted and stops being reachable, immediately.
+        this.waitingConsumers.remove(waiter);
         AsyncQueue.detach(waiter);
         waiter.reject(abortReason(signal));
       };
@@ -416,19 +459,15 @@ export class AsyncQueue<T = any> {
       resolve = res;
       reject = rej;
     });
-    const waiter: ProducerWaiter<T> = { item, promise, resolve, reject, cancelled: false, settled: false };
+    const waiter: ProducerWaiter<T> = { prev: null, next: null, item, promise, resolve, reject, settled: false };
 
-    this.producersHead = AsyncQueue.ensureRoom(this.waitingProducers, this.producersHead, this.producersSlots);
-    this.waitingProducers[this.producersHead + this.producersSlots] = waiter;
-    this.producersSlots++;
-    this.waitingProducersCount++;
+    this.waitingProducers.push(waiter);
 
     if (signal !== undefined) {
       const onAbort = (): void => {
         if (waiter.settled) return;
         waiter.settled = true;
-        waiter.cancelled = true;
-        this.waitingProducersCount--;
+        this.waitingProducers.remove(waiter);
         AsyncQueue.detach(waiter);
         // Release the item: a cancelled producer must never insert it later.
         waiter.item = undefined as T;
@@ -440,49 +479,6 @@ export class AsyncQueue<T = any> {
     }
 
     return waiter;
-  }
-
-  /**
-   * Removes and returns the oldest LIVE consumer, discarding cancelled ones on
-   * the way. FIFO: the caller who has been waiting longest is served first.
-   */
-  private popConsumer(): ConsumerWaiter<T> | undefined {
-    while (this.consumersSlots > 0) {
-      const waiter = this.waitingConsumers[this.consumersHead] as ConsumerWaiter<T>;
-      this.waitingConsumers[this.consumersHead] = undefined; // Help GC
-      this.consumersHead++;
-      this.consumersSlots--;
-      if (this.consumersSlots === 0) {
-        this.consumersHead = 0;
-      }
-      if (!waiter.cancelled) {
-        this.waitingConsumersCount--;
-        return waiter;
-      }
-    }
-    return undefined;
-  }
-
-  /**
-   * Removes and returns the oldest LIVE producer, discarding cancelled ones on
-   * the way. FIFO: items enter the buffer in the order their producers called
-   * enqueue(), which is what "strict FIFO" has to mean once producers block.
-   */
-  private popProducer(): ProducerWaiter<T> | undefined {
-    while (this.producersSlots > 0) {
-      const waiter = this.waitingProducers[this.producersHead] as ProducerWaiter<T>;
-      this.waitingProducers[this.producersHead] = undefined; // Help GC
-      this.producersHead++;
-      this.producersSlots--;
-      if (this.producersSlots === 0) {
-        this.producersHead = 0;
-      }
-      if (!waiter.cancelled) {
-        this.waitingProducersCount--;
-        return waiter;
-      }
-    }
-    return undefined;
   }
 
   /**
@@ -514,8 +510,7 @@ export class AsyncQueue<T = any> {
   private cancelConsumer(waiter: ConsumerWaiter<T>): void {
     if (waiter.settled) return;
     waiter.settled = true;
-    waiter.cancelled = true;
-    this.waitingConsumersCount--;
+    this.waitingConsumers.remove(waiter);
     AsyncQueue.detach(waiter);
     waiter.resolve(DONE);
   }
@@ -614,7 +609,7 @@ export class AsyncQueue<T = any> {
     // and give it the item. A consumer can only be waiting while count === 0, so
     // this preserves FIFO. It is also the only way an abandoned-but-live waiter
     // cannot silently stall a queue that is otherwise making progress.
-    const consumer = this.popConsumer();
+    const consumer = this.waitingConsumers.shift();
     if (consumer !== undefined) {
       this.settleConsumer(consumer, item);
       return RESOLVED;
@@ -747,17 +742,17 @@ export class AsyncQueue<T = any> {
     // Release ALL waiting consumers with end-of-stream
     // This allows graceful shutdown where all consumers exit cleanly
     for (;;) {
-      const consumer = this.popConsumer();
+      const consumer = this.waitingConsumers.shift();
       if (consumer === undefined) break;
       this.settleConsumerDone(consumer);
     }
 
     // Reject ALL waiting producers - their items cannot be enqueued, so they are
     // collected and handed back to the caller instead of being discarded.
-    // popProducer() is FIFO, so `dropped` is in the order the producers called
+    // The list is FIFO, so `dropped` is in the order the producers called
     // enqueue(), i.e. the order in which the items would have entered the queue.
     for (;;) {
-      const producer = this.popProducer();
+      const producer = this.waitingProducers.shift();
       if (producer === undefined) break;
       dropped.push(this.rejectProducerClosed(producer));
     }
@@ -812,7 +807,7 @@ export class AsyncQueue<T = any> {
    * @returns The number of consumers waiting for items
    */
   get waitingConsumerCount(): number {
-    return this.waitingConsumersCount;
+    return this.waitingConsumers.size;
   }
 
   /**
@@ -820,7 +815,7 @@ export class AsyncQueue<T = any> {
    * @returns The number of producers waiting for space
    */
   get waitingProducerCount(): number {
-    return this.waitingProducersCount;
+    return this.waitingProducers.size;
   }
 
   /**

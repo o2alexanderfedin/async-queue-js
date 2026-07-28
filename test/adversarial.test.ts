@@ -9,11 +9,23 @@ const raceTimeout = <T>(p: Promise<T>, ms: number, tag = 'HUNG') =>
   Promise.race([p, sleep(ms).then(() => tag as any)]);
 
 // Reach into privates for structural claims.
+interface WaiterListShape {
+  head: { next: unknown } | null;
+  tail: unknown;
+  size: number;
+}
 const priv = (q: any) => q as {
   buffer: unknown[];
-  waitingConsumers: unknown[];
-  waitingProducers: unknown[];
+  waitingConsumers: WaiterListShape;
+  waitingProducers: WaiterListShape;
   maxSize: number;
+};
+
+/** Counts the nodes actually reachable in a waiter list. */
+const nodeCount = (list: WaiterListShape): number => {
+  let n = 0;
+  for (let node = list.head; node !== null; node = node.next as typeof node) n++;
+  return n;
 };
 
 describe('CLAIM: backpressure genuinely suspends the producer', () => {
@@ -64,22 +76,71 @@ describe('CLAIM: O(1) memory', () => {
     expect(priv(new AsyncQueue(1_000)).buffer.length).toBe(1_024);
   });
 
-  test('waiting arrays grow to the concurrency high-water mark and never shrink', async () => {
+  // REWRITTEN. The original asserted the retention as correct:
+  //
+  //   const peak = priv(q).waitingProducers.length;
+  //   expect(peak).toBeGreaterThanOrEqual(1000);
+  //   ... full drain ...
+  //   expect(priv(q).waitingProducers.length).toBe(peak);
+  //
+  // i.e. it pinned "memory is O(peak waiters), retained forever" as intended
+  // behaviour. Measured cost of that design: 50,000 transient producers left
+  // the backing array at 65,536 slots, still 65,536 after a full drain, ~512
+  // KiB of pointers held for the lifetime of the queue. That is a leak in the
+  // only sense that matters to a long-lived queue with a bursty producer
+  // count, and it made a cancelled-but-unreaped waiter record unreachable to
+  // GC while its slot sat in the ring. The waiter queues are now intrusive
+  // linked lists, so there is no backing store to retain and this test asserts
+  // the opposite: peak concurrency costs nothing once it has passed.
+  test('waiter storage is released as waiters leave — no high-water-mark retention', async () => {
     const q = new AsyncQueue<number>(1);
     await q.enqueue(0);
     const producers = Array.from({ length: 1000 }, (_, i) => q.enqueue(i).catch(() => {}));
     await sleep(10);
-    const peak = priv(q).waitingProducers.length;
-    expect(peak).toBeGreaterThanOrEqual(1000);
+
+    // At peak, every blocked producer is a node in the list and is counted.
+    expect(q.waitingProducerCount).toBe(1000);
+    expect(nodeCount(priv(q).waitingProducers)).toBe(1000);
 
     // Fully drain: no producers waiting any more.
     while (q.waitingProducerCount > 0 || q.size > 0) await q.dequeue();
     await sleep(10);
     expect(q.waitingProducerCount).toBe(0);
 
-    // Retained capacity is unchanged -> memory is O(peak waiters), retained forever.
-    expect(priv(q).waitingProducers.length).toBe(peak);
+    // Nothing is retained: no reachable nodes, no head, no tail, and no array
+    // whose length remembers the high-water mark.
+    expect(nodeCount(priv(q).waitingProducers)).toBe(0);
+    expect(priv(q).waitingProducers.head).toBeNull();
+    expect(priv(q).waitingProducers.tail).toBeNull();
+    expect(Array.isArray(priv(q).waitingProducers)).toBe(false);
+
     await Promise.all(producers);
+  });
+
+  test('cancelled waiters are unlinked immediately, not tombstoned until the next pop', async () => {
+    const q = new AsyncQueue<number>(1);
+    await q.enqueue(0);
+
+    const controllers = Array.from({ length: 500 }, () => new AbortController());
+    const cancelled = controllers.map((c, i) =>
+      q.enqueue(i, { signal: c.signal }).catch(() => {})
+    );
+    const live = q.enqueue(999).catch(() => {});
+    await sleep(10);
+    expect(q.waitingProducerCount).toBe(501);
+
+    // Abort all but the last one. They are in the MIDDLE of the list.
+    for (const c of controllers) c.abort();
+    await Promise.all(cancelled);
+
+    // The count is the live count, and the records are gone from the structure
+    // right away — nothing has to walk past 500 corpses to find the survivor.
+    expect(q.waitingProducerCount).toBe(1);
+    expect(nodeCount(priv(q).waitingProducers)).toBe(1);
+
+    expect(await q.dequeue()).toBe(0);
+    expect(await q.dequeue()).toBe(999);      // the survivor's item, not a corpse's
+    await live;
   });
 });
 
