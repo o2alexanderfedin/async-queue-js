@@ -36,11 +36,11 @@ View our comprehensive test, coverage, and performance reports:
 
 - **🚀 Blazing Fast**: Optimized circular buffer with power-of-2 sizing
 - **🔒 Backpressure Control**: Automatically slows down producers when full
-- **💾 Memory Efficient**: Bounded memory with reserved capacity management
+- **💾 Memory Efficient**: Bounded buffer, and waiter storage that is released as waiters leave — a burst of blocked callers costs nothing once it is over
 - **⚙️ Configurable Buffer**: Control memory usage and coupling
 - **🔄 Non-blocking Async/Await**: Event loop friendly, no busy waiting
 - **🛑 Graceful Shutdown**: Close and drain remaining items
-- **📦 FIFO Ordering**: Strict first-in, first-out guarantee
+- **📦 FIFO Ordering**: Strict first-in, first-out, for items *and* for blocked callers — the longest-waiting producer or consumer is always the next one served, so no caller can be starved
 - **👥 Multiple Producers/Consumers**: Safe concurrent access
 
 ## Installation
@@ -139,7 +139,8 @@ produceData(queue, 'P0');
 
 // SAFE — you own it, so you handle it
 void produceData(queue, 'P0').catch(err => {
-  if (err?.message !== 'Queue is closed') throw err;
+  if (!(err instanceof QueueClosedError)) throw err;
+  console.warn('undelivered:', err.item);   // the exact payload that was refused
 });
 ```
 
@@ -186,7 +187,7 @@ for await (const result of double(queue)) {
 Create a new type-safe queue with specified buffer size.
 - `T`: Type of items in the queue
 - `maxSize`: Maximum items before producers block (default: 1)
-- `options.onDropped?: (error, item) => void`: notified whenever an `enqueue()` is rejected, i.e. whenever an item is dropped because the queue was or became closed
+- `options.onDropped?: (error: QueueClosedError<T>, item: T) => void`: notified whenever an `enqueue()` is rejected, i.e. whenever an item is dropped because the queue was or became closed
 
 `maxSize` is validated and normalised:
 
@@ -203,7 +204,7 @@ Create a new type-safe queue with specified buffer size.
 Add an item to the queue. Blocks if queue is full.
 - `options.signal?: AbortSignal`: cancels the call **if it has to block**. Rejects with `signal.reason` (or an `AbortError`), and the item is guaranteed never to enter the queue.
 - Returns: Promise that resolves when item is added
-- Rejects with `Error('Queue is closed')` if the queue is or becomes closed
+- Rejects with a [`QueueClosedError`](#queueclosederrort) if the queue is or becomes closed. **The error carries the item that was refused**, as `err.item`, so a producer can retry it elsewhere.
 
 **This promise is never reported as an unhandled rejection.** `close()` rejects every blocked producer, and a fire-and-forget producer (`void queue.enqueue(x)`) has no handler attached — on Node ≥ 15 that would terminate the process, once per blocked producer. The queue marks its own rejections as handled when it creates them. Awaiting or `.catch()`ing still observes the error exactly as before; the consequence is that an unobserved dropped item is now *silent* rather than *fatal*. Use `onDropped` to observe drops globally.
 
@@ -244,8 +245,38 @@ try {
 }
 ```
 
-### `close(): void`
-Signal that no more items will be added. Releases all waiting consumers with end-of-stream, and rejects all blocked producers (their items are dropped). Idempotent.
+### `close(): T[]`
+Signal that no more items will be added. Releases all waiting consumers with end-of-stream, and rejects all blocked producers. Idempotent.
+
+**Returns the items of every producer that was blocked at that moment, in FIFO order.** Those items never entered the queue and never will, so returning them is what makes the loss recoverable rather than merely observable — without it, at-least-once delivery cannot be built on top of the queue. Buffered items are *not* returned: they are not lost, and a consumer can still drain them after `close()`.
+
+```typescript
+const undelivered = queue.close();
+for (const item of undelivered) {
+  await backupQueue.enqueue(item);   // nothing is silently lost
+}
+```
+
+A repeat `close()` returns `[]`. A producer cancelled by its own `AbortSignal` is *not* included — its caller already received `AbortError` and knows what it lost.
+
+### `QueueClosedError<T>`
+The rejection reason for any `enqueue()` the queue refuses, whether the caller enqueued after `close()` or was blocked when `close()` arrived.
+
+```typescript
+try {
+  await queue.enqueue(job);
+} catch (err) {
+  if (err instanceof QueueClosedError) {
+    await deadLetterQueue.enqueue(err.item);   // the exact payload that was refused
+  } else {
+    throw err;
+  }
+}
+```
+
+It extends `Error`, `message` is still exactly `'Queue is closed'`, and `name` is `'QueueClosedError'` — existing `err.message === 'Queue is closed'` checks keep working unchanged.
+
+The same loss is reachable three ways — `err.item`, the `onDropped` hook, and `close()`'s return value. They always report the same items; pick whichever the shutdown path can actually see. The producer's own `catch` is the only one that knows the surrounding context; `close()`'s return value is the only one available to code that owns the queue rather than the producers.
 
 ### `get isClosed(): boolean`
 Check if queue is closed AND empty.
@@ -267,7 +298,20 @@ Returns an async iterator for use with `for-await-of` loops. Calling `return()` 
 Creates an async iterable for consuming queue items.
 
 ### `toAsyncGenerator(): AsyncGenerator<T>`
-Converts the queue to an async generator for pipeline transformations.
+Converts the queue to an async generator for pipeline transformations. Returns the same hand-written cursor as `for await`, so `return()` releases a suspended `next()` immediately here too — see below.
+
+### Tearing down a consumer without closing the queue
+
+Every iteration entry point (`for await`, `iterate()`, `toAsyncGenerator()`) returns a cursor that owns its waiter directly rather than being an `async function*`. That matters for shutdown: a real async generator services `return()` from an internal request queue and cannot reach it while suspended at an `await`, so a generator parked on an empty queue would stay parked until something *else* released it — in practice, only `close()`. Tearing down a pool of workers over a shared queue therefore deadlocked.
+
+```typescript
+const workers = Array.from({ length: 8 }, () => queue.toAsyncGenerator());
+// ...
+await Promise.all(workers.map(w => w.return(undefined)));   // settles immediately
+// the queue is untouched and still usable by a fresh pool
+```
+
+`break` out of a `for await` does this automatically. On runtimes with `Symbol.asyncDispose` (Node ≥ 20), `await using` works too.
 
 ### `async drain(): Promise<T[]>`
 Drains all items from the queue into an array.
@@ -279,8 +323,8 @@ Takes up to n items from the queue
 
 1. **Circular Buffer**: O(1) operations vs O(n) array.shift()
 2. **Power-of-2 Sizing**: Bitwise AND for modulo operations
-3. **FIFO Waiting Rings**: head-index rings, O(1) amortised push and pop — no `shift()`, and unlike a stack they cannot starve the longest-waiting caller
-4. **Reserved Capacity**: Pre-allocate and never shrink
+3. **FIFO Waiter Lists**: intrusive doubly-linked lists, O(1) push, pop *and* removal-from-the-middle — no `shift()`, and unlike a stack they cannot starve the longest-waiting caller
+4. **No Waiter Backing Store**: the list pointers live on the waiter record that has to exist anyway, so being queued costs no allocation and a burst of blocked callers is fully released once it passes
 5. **Direct Handoff**: Skip buffer when consumer is waiting
 
 ## How It Works
@@ -290,7 +334,7 @@ The AsyncQueue uses TypeScript Promises with performance optimizations:
 1. **Circular Buffer**: Uses head/tail pointers instead of array shifts
 2. **Blocking Behavior**: Producers/consumers await on Promises when full/empty
 3. **Wake Mechanism**: Direct resolver handoff for minimal latency
-4. **Memory Management**: Reserved capacity with 2x growth strategy
+4. **Memory Management**: bounded item buffer; waiter storage is per-waiter and released on departure, so nothing is retained at the concurrency high-water mark
 
 This achieves 10M ops/sec throughput with predictable sub-microsecond latency.
 

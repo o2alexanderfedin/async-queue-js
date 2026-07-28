@@ -29,8 +29,8 @@
 ### Test Configuration & Results
 | Test Scenario | Operations | Duration | Throughput | Notes |
 |--------------|------------|----------|------------|-------|
-| FIFO waiting rings | 10,000 | 6ms | 1,666,667 ops/sec | O(1) amortised |
-| Reserved capacity stress | 10,000 | 3-4ms | 2,500,000-3,333,333 ops/sec | 100 producers/consumers |
+| FIFO waiter lists | 10,000 | 6ms | 1,666,667 ops/sec | O(1) push/pop/remove |
+| Waiter-queue stress | 10,000 | 3-4ms | 2,500,000-3,333,333 ops/sec | 100 producers/consumers |
 | Mixed producer/consumer | 20,000 | 2-3ms | 6,666,667-10,000,000 ops/sec | Optimal conditions |
 | Sequential cycle | 200,000 | ~20ms | 10,000,000 ops/sec | Peak performance |
 
@@ -57,15 +57,22 @@
    - Bitwise AND for modulo (2 CPU ops vs 10-40)
    - `(index + 1) & bufferMask` instead of `% capacity`
 
-3. **FIFO Waiting Rings**: **Massive improvement at scale**
-   - Head-index ring: O(1) amortised push/pop, no O(n) `shift()`
+3. **FIFO Waiter Lists**: **Massive improvement at scale**
+   - Intrusive doubly-linked list: O(1) push, pop, and removal from the middle;
+     no O(n) `shift()` and no scan past cancelled waiters
    - 1.67M ops/sec sustained with many waiters
    - Serves the longest-waiting caller first. A LIFO stack is equally O(1)
-     but starves the oldest waiter under sustained contention.
+     but starves the oldest waiter under sustained contention: measured on the
+     original implementation, 1,531 later producers completed over 2 seconds
+     while the first blocked producer was never woken at all.
 
-4. **Reserved Capacity**: **Zero reallocation overhead**
-   - Initial capacity: 16, grows by 2x
-   - No shrinking = predictable performance
+4. **No Waiter Backing Store**: **Nothing retained at the high-water mark**
+   - The list pointers live on the waiter record that must be allocated anyway,
+     so being queued costs zero additional allocation
+   - Measured, 50,000 transient producers then a full drain: the queue retains
+     **3.3 KiB**, against **514.7 KiB** for the previous grow-only arrays
+   - An empty `AsyncQueue(1)` costs 0.267 KiB, down from 0.531 KiB, and
+     construction is ~6x faster (7.4M -> 44.9M queues/sec)
 
 5. **Direct Producer-Consumer Handoff**: **2x faster**
    - Skip buffer when consumer is waiting
@@ -98,7 +105,7 @@ Queue(10000): ~80 KB
 **High-Frequency Trading**
 - **10M messages/sec** sustainable (measured peak throughput)
 - **100-200ns** predictable latency (measured)
-- Zero GC pressure with reserved capacity
+- No waiter storage retained after a burst subsides
 
 **Microservices Communication**
 - Natural backpressure prevents OOM
@@ -190,11 +197,13 @@ Perfect for high-performance, mission-critical applications where every nanoseco
 | 1P/4C Pattern | 10 | 40 ops | >5M ops/sec |
 | 4P/1C Pattern | 10 | 40 ops | >5M ops/sec |
 
-### Memory & Capacity Growth Observations
-- Initial waiting capacity: 16
-- Growth points: 16, 32, 64, 128, 256, 512, 1024
+### Memory & Waiter-Storage Observations
+- No pre-allocated waiter capacity and no growth step: each blocked caller is
+  one list node, allocated as part of the waiter record it needs anyway
 - Memory delta for 10K items: 0.73MB
-- No reallocation within reserved capacity
+- Waiter storage is released as waiters leave: after 50,000 transient producers
+  and a full drain, the queue retains 3.3 KiB (previously 514.7 KiB, sized by a
+  burst that was already over)
 - Zero memory churn in steady state
 
 ---
