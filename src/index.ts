@@ -531,6 +531,18 @@ export class AsyncQueue<T = any> {
     });
     const waiter: ProducerWaiter<T> = { prev: null, next: null, item, promise, resolve, reject, settled: false };
 
+    // Mark the producer's promise as handled up front, for the same reason
+    // close() does (D1): enqueue() hands this exact promise back to the caller,
+    // and the documented shape `void queue.enqueue(x)` attaches no handler. A
+    // blocked producer has exactly two ways to be rejected — close() and abort —
+    // and BOTH would otherwise terminate the host process on Node >= 15.
+    // Suppressing here rather than at each rejection site covers both without
+    // relying on every future rejection path remembering to do it.
+    //
+    // This does not consume the rejection: an awaiting caller, or any .catch()
+    // the caller attaches, still observes the error exactly as before.
+    promise.catch(NOOP);
+
     this.waitingProducers.push(waiter);
 
     if (signal !== undefined) {
@@ -655,16 +667,20 @@ export class AsyncQueue<T = any> {
    *          `item`, and whose `.message` is still `'Queue is closed'` — if the
    *          queue is or becomes closed
    *
-   * The returned promise is *never* reported as an unhandled rejection. `close()`
-   * rejects every blocked producer, and a producer started fire-and-forget
-   * (`void queue.enqueue(x)`, the shape used in this library's own README
-   * examples) has no handler attached, so on Node >= 15 that rejection would
-   * terminate the host process — one fatal event per blocked producer. The queue
-   * therefore marks its own rejections as handled at the moment it creates them.
+   * The returned promise is *never* reported as an unhandled rejection, by
+   * *either* route that can reject it. A blocked producer is rejected by
+   * `close()` and by aborting `options.signal`; a producer started
+   * fire-and-forget (`void queue.enqueue(x)`, the shape used in this library's
+   * own README examples) has no handler attached, so on Node >= 15 either
+   * rejection would terminate the host process — one fatal event per blocked
+   * producer. The queue therefore marks the promise as handled at the moment it
+   * creates it, before it can be rejected at all, rather than at each rejection
+   * site.
    *
    * Consequence: if you neither await nor `.catch()` the returned promise, a
    * dropped item is now silent rather than fatal. Pass `onDropped` to the
-   * constructor to observe drops globally.
+   * constructor to observe drops globally. (`onDropped` reports closed-queue
+   * drops only — an abort is caller-initiated, not a loss.)
    *
    * @param options Optional `{ signal }` to cancel the call while it is blocked,
    *                see {@link AbortOptions}
@@ -695,7 +711,12 @@ export class AsyncQueue<T = any> {
     // inserted by whoever frees a slot; see takeFromBuffer().
     const signal = options?.signal;
     if (signal !== undefined && signal.aborted) {
-      return Promise.reject(abortReason(signal));
+      // Marked handled for the same reason as every other rejection this method
+      // can return: `void queue.enqueue(x, { signal })` attaches no handler, and
+      // an unhandled rejection is fatal on Node >= 15.
+      const rejected = Promise.reject(abortReason(signal));
+      rejected.catch(NOOP);
+      return rejected;
     }
     return this.pushProducer(item, signal).promise;
   }
@@ -930,13 +951,34 @@ export class AsyncQueue<T = any> {
   private createCursor(): AsyncGenerator<T> {
     const queue = this;
     let finished = false;
-    let pending: ConsumerWaiter<T> | null = null;
+
+    // EVERY in-flight next(), not just the most recent one.
+    //
+    // This was a single `pending` slot, which is only correct while next() calls
+    // are strictly sequential. They need not be: the iterator protocol permits
+    // concurrent next() calls (a real async generator queues them), and the
+    // ordinary poll-with-timeout shape
+    //   `await Promise.race([it.next(), timeout]); ... it.next()`
+    // reaches the same state with no concurrency at all — the abandoned waiter
+    // is simply overwritten.
+    //
+    // Whatever the route, the overwritten waiter was orphaned: return() could no
+    // longer see it, so it stayed parked in the queue's consumer list forever
+    // (the very D7 teardown deadlock this cursor exists to prevent) AND, being
+    // still queued, it would absorb the next enqueued item — delivering a value
+    // through an iterator that had already been torn down, and losing that item
+    // for every other consumer.
+    const pending = new Set<ConsumerWaiter<T>>();
 
     const release = (): void => {
       finished = true;
-      if (pending !== null) {
-        const waiter = pending;
-        pending = null;
+      if (pending.size === 0) return;
+      // Snapshot: cancelConsumer() settles the waiter, but the `.then` below
+      // that removes it from this set runs in a later microtask, so the set must
+      // not be mutated underfoot here.
+      const inflight = Array.from(pending);
+      pending.clear();
+      for (const waiter of inflight) {
         queue.cancelConsumer(waiter);
       }
     };
@@ -961,11 +1003,9 @@ export class AsyncQueue<T = any> {
         }
 
         const waiter = queue.pushConsumer(undefined);
-        pending = waiter;
+        pending.add(waiter);
         return waiter.promise.then((result): IteratorResult<T> => {
-          if (pending === waiter) {
-            pending = null;
-          }
+          pending.delete(waiter);
           if (result.done) {
             finished = true;
             return ITERATOR_DONE;

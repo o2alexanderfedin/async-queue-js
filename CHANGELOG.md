@@ -70,6 +70,31 @@ types promised a class.
 
 ### Fixed
 
+- **Aborting a fire-and-forget `enqueue()` killed the host process.** The D1 fix
+  suppressed the rejection `close()` delivers to a blocked producer, but the
+  cancellation support added afterwards introduced a *second* way to reject that
+  same promise, and did not suppress it. `void queue.enqueue(x, { signal })`
+  followed by `controller.abort()` — the natural shutdown shape for a
+  cancellable producer — raised one unhandled rejection per blocked producer and
+  terminated the process on Node ≥ 15, the exact failure D1 exists to prevent.
+  The producer's promise is now marked handled when it is *created*, so every
+  rejection route is covered rather than each one having to remember. Awaiting or
+  `.catch()`ing still observes the abort reason unchanged. `onDropped` is
+  deliberately not fired for an abort: it is caller-initiated, not a loss.
+
+- **`iterator.return()` released only the most recent in-flight `next()`.** The
+  hand-written cursor that replaced the async generator tracked a single pending
+  waiter. A second `next()` overwrote that slot and orphaned the first waiter,
+  which then (a) could never be released by `return()`, `throw()`, or
+  `Symbol.asyncDispose` — reinstating the teardown deadlock the cursor was
+  written to remove — and (b) stayed queued as a live consumer, so it **absorbed
+  the next enqueued item**, delivering a value through an already-torn-down
+  iterator and losing that item for every other consumer. Reaching the bad state
+  needed no concurrency: `await Promise.race([it.next(), timeout])` followed by
+  another `it.next()` was enough. The cursor now tracks every in-flight waiter
+  and releases all of them, so a torn-down iterator holds nothing and steals
+  nothing. Sequential `for await` was never affected.
+
 - **`import AsyncQueue from '@alexanderfedin/async-queue'; new AsyncQueue()`
   threw `TypeError: AsyncQueue is not a constructor`** — and type-checked clean
   under `moduleResolution: "bundler"` while correctly reporting `TS2351` under

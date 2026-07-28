@@ -176,7 +176,7 @@ for (let i = 0; i < 2; i++) {
 
 #### Detached producers must catch
 
-`close()` rejects every producer that is blocked at that moment. The queue suppresses that rejection on the promise **it** returns, so `void queue.enqueue(x)` can never crash your process. But it cannot reach a promise it did not create — if you detach an `async` wrapper, the rejection lands on *your* promise:
+`close()` rejects every producer that is blocked at that moment, and so does aborting that producer's `signal`. The queue suppresses both rejections on the promise **it** returns, so `void queue.enqueue(x)` can never crash your process. But it cannot reach a promise it did not create — if you detach an `async` wrapper, the rejection lands on *your* promise:
 
 ```typescript
 // SAFE — the queue owns and guards this promise
@@ -254,7 +254,7 @@ Add an item to the queue. Blocks if queue is full.
 - Returns: Promise that resolves when item is added
 - Rejects with a [`QueueClosedError`](#queueclosederrort) if the queue is or becomes closed. **The error carries the item that was refused**, as `err.item`, so a producer can retry it elsewhere.
 
-**This promise is never reported as an unhandled rejection.** `close()` rejects every blocked producer, and a fire-and-forget producer (`void queue.enqueue(x)`) has no handler attached — on Node ≥ 15 that would terminate the process, once per blocked producer. The queue marks its own rejections as handled when it creates them. Awaiting or `.catch()`ing still observes the error exactly as before; the consequence is that an unobserved dropped item is now *silent* rather than *fatal*. Use `onDropped` to observe drops globally.
+**This promise is never reported as an unhandled rejection** — for *either* way it can be rejected. `close()` rejects every blocked producer, and aborting `options.signal` rejects that producer too; a fire-and-forget producer (`void queue.enqueue(x)`, `void queue.enqueue(x, { signal })`) has no handler attached, so on Node ≥ 15 either rejection would terminate the process, once per blocked producer. The queue marks its own rejections as handled when it creates them. Awaiting or `.catch()`ing still observes the error exactly as before; the consequence is that an unobserved dropped item is now *silent* rather than *fatal*. Use `onDropped` to observe drops globally — note it fires for closed-queue drops only, since an abort is caller-initiated rather than a loss.
 
 ### `dequeue(options?): Promise<T | undefined>`
 Remove and return the oldest item. Blocks if queue is empty.
