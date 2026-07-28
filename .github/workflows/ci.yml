@@ -18,7 +18,9 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        node-version: [16.x, 18.x, 20.x]
+        # Node 24 is the current LTS; 22 is maintenance LTS. 16/18 are kept
+        # because package.json engines still declares >=16.
+        node-version: [16.x, 18.x, 20.x, 22.x, 24.x]
 
     steps:
     - uses: actions/checkout@v4
@@ -43,11 +45,11 @@ jobs:
       timeout-minutes: 5
 
     - name: Generate coverage
-      if: matrix.os == 'ubuntu-latest' && matrix.node-version == '20.x'
+      if: matrix.os == 'ubuntu-latest' && matrix.node-version == '24.x'
       run: npm run test:coverage
 
     - name: Upload coverage to Codecov
-      if: matrix.os == 'ubuntu-latest' && matrix.node-version == '20.x'
+      if: matrix.os == 'ubuntu-latest' && matrix.node-version == '24.x'
       uses: codecov/codecov-action@v3
       with:
         file: ./coverage/lcov.info
@@ -65,7 +67,7 @@ jobs:
     - name: Use Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '20.x'
+        node-version: '24.x'
         cache: 'npm'
 
     - name: Install dependencies
@@ -101,7 +103,7 @@ jobs:
     - name: Use Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '20.x'
+        node-version: '24.x'
         cache: 'npm'
 
     - name: Install dependencies
@@ -116,9 +118,47 @@ jobs:
     - name: Check formatting
       run: npm run format:check || true
 
+  packaging:
+    # Guards the published artifact, which unit tests cannot: they import src/,
+    # so they say nothing about what a consumer actually receives.
+    #
+    #   verify:provenance — dist/ is byte-identical to a fresh tsc run from src/
+    #   verify:packaging  — packs the real tarball, installs it into throwaway
+    #                       ESM and CommonJS consumers, then type-checks under
+    #                       both "bundler" and "nodenext" and RUNS the result
+    #
+    # Runs on the engines floor and on current LTS, because module resolution
+    # behaviour differs across Node majors.
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [16.x, 24.x]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Build
+      run: npm run build
+
+    - name: Verify dist/ is exactly what tsc produced
+      run: npm run verify:provenance
+
+    - name: Verify the published artifact resolves for ESM and CommonJS
+      run: npm run verify:packaging
+
   generate-reports:
     runs-on: ubuntu-latest
-    needs: [test, benchmark, lint]
+    needs: [test, benchmark, lint, packaging]
     if: github.ref == 'refs/heads/main'
 
     steps:
@@ -127,7 +167,7 @@ jobs:
     - name: Use Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '20.x'
+        node-version: '24.x'
         cache: 'npm'
 
     - name: Install dependencies
@@ -171,7 +211,7 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    needs: [test, benchmark, lint]
+    needs: [test, benchmark, lint, packaging]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     steps:
@@ -182,7 +222,7 @@ jobs:
     - name: Use Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '20.x'
+        node-version: '24.x'
         cache: 'npm'
         registry-url: 'https://registry.npmjs.org'
 
