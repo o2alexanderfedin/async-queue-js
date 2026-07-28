@@ -1,0 +1,110 @@
+{
+  "machine": {
+    "node": "v23.11.0",
+    "v8": "12.9.202.28-node.14",
+    "os": "Darwin 25.5.0",
+    "arch": "arm64",
+    "cpu": "Apple M1 Pro",
+    "cores": 8,
+    "memoryGiB": 32
+  },
+  "generatedAt": "2026-07-28T21:33:45.051Z",
+  "emptyQueueByCapacity": [
+    {
+      "maxSize": 1,
+      "bufferSlots": 1,
+      "bytesPerQueue": 250.006,
+      "bytesPerSlot": 250.006
+    },
+    {
+      "maxSize": 10,
+      "bufferSlots": 16,
+      "bytesPerQueue": 369.1572,
+      "bytesPerSlot": 23.072325
+    },
+    {
+      "maxSize": 100,
+      "bufferSlots": 128,
+      "bytesPerQueue": 1267.328,
+      "bytesPerSlot": 9.901
+    },
+    {
+      "maxSize": 1000,
+      "bufferSlots": 1024,
+      "bytesPerQueue": 8432.984,
+      "bytesPerSlot": 8.2353359375
+    },
+    {
+      "maxSize": 10000,
+      "bufferSlots": 16384,
+      "bytesPerQueue": 131291.84,
+      "bytesPerSlot": 8.01341796875
+    },
+    {
+      "maxSize": 100000,
+      "bufferSlots": 131072,
+      "bytesPerQueue": 1048889.6,
+      "bytesPerSlot": 8.002392578125
+    },
+    {
+      "maxSize": 1000000,
+      "bufferSlots": 1048576,
+      "bytesPerQueue": 8389196,
+      "bytesPerSlot": 8.000560760498047
+    },
+    {
+      "maxSize": 10000000,
+      "bufferSlots": 16777216,
+      "bytesPerQueue": 134219384,
+      "bytesPerSlot": 8.000098705291748
+    }
+  ],
+  "messagesThrough": {
+    "messages": 1000000,
+    "capacity": 1024,
+    "heapBefore": 27500656,
+    "heapAfter": 27673400,
+    "retainedDelta": 172744,
+    "collections": 53,
+    "gcPauseMs": 4.487457000000002,
+    "bytesReclaimed": 444517056,
+    "bytesReclaimedPerMessage": 444.517056,
+    "gcProfilerAvailable": true
+  },
+  "burst": {
+    "producers": 50000,
+    "baseline": 27534776,
+    "rounds": [
+      {
+        "round": 1,
+        "peakAboveBaseline": 15224320,
+        "settledAboveBaseline": 430392,
+        "bytesPerBlockedProducer": 304.4864
+      },
+      {
+        "round": 2,
+        "peakAboveBaseline": 15254264,
+        "settledAboveBaseline": 445040,
+        "bytesPerBlockedProducer": 305.08528
+      },
+      {
+        "round": 3,
+        "peakAboveBaseline": 15247360,
+        "settledAboveBaseline": 447480,
+        "bytesPerBlockedProducer": 304.9472
+      },
+      {
+        "round": 4,
+        "peakAboveBaseline": 15254728,
+        "settledAboveBaseline": 466816,
+        "bytesPerBlockedProducer": 305.09456
+      },
+      {
+        "round": 5,
+        "peakAboveBaseline": 15262328,
+        "settledAboveBaseline": 455592,
+        "bytesPerBlockedProducer": 305.24656
+      }
+    ]
+  }
+}

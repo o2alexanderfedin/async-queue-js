@@ -76,15 +76,18 @@ jobs:
     - name: Build
       run: npm run build
 
+    # The harness records the machine it ran on into every results file and
+    # prints it above the table, so a number is never published without the
+    # hardware it came from. A shared CI runner is noisy: expect some cases to
+    # be flagged UNSTABLE here that are stable on a quiet machine. That is the
+    # harness working, not failing — an UNSTABLE row is a row that must not be
+    # quoted, so the job does not gate on it.
     - name: Run benchmarks
       run: |
         echo "Running benchmarks on GitHub Actions runner..."
-        echo "CPU Info:"
-        lscpu 2>/dev/null || sysctl -a | grep machdep.cpu 2>/dev/null || echo "CPU info not available"
-        echo "Memory Info:"
-        free -h 2>/dev/null || vm_stat 2>/dev/null || echo "Memory info not available"
-        echo ""
         npm run benchmark
+        npm run benchmark:compare
+        npm run benchmark:memory
       timeout-minutes: 10
 
     - name: Store benchmark results

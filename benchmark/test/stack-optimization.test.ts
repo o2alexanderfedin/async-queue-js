@@ -1,12 +1,20 @@
 import { AsyncQueue } from '../../src/index';
+import { performance } from 'perf_hooks';
 
-describe('Stack Optimization Benchmark', () => {
+/**
+ * These assert an upper bound on wall-clock time for a large number of waiters
+ * — i.e. that waking a waiter is O(1) and not O(n). They are NOT measurements:
+ * one timed run, no samples, no percentiles. The throughput they print is a
+ * coarse smoke-test figure and must not be quoted anywhere. For numbers that
+ * can be published, use `npm run benchmark` (see benchmark/src/harness.ts).
+ */
+describe('Waiter-wake cost', () => {
   test('should show performance with many waiting consumers/producers', async () => {
     const OPERATIONS = 10000;
     const queue = new AsyncQueue<number>(1); // Small buffer to force waiting
 
     // Measure with many waiters
-    const start = Date.now();
+    const start = performance.now();
 
     // Create many waiting consumers
     const consumers: Promise<any>[] = [];
@@ -21,18 +29,22 @@ describe('Stack Optimization Benchmark', () => {
 
     await Promise.all(consumers);
 
-    const duration = Date.now() - start;
+    const duration = performance.now() - start;
     const throughput = Math.round(OPERATIONS / (duration / 1000));
 
     console.log(`
-    Stack-based waiting queues (O(1) pop):
+    FIFO waiter list, O(1) push/pop/remove:
     Operations: ${OPERATIONS}
-    Duration: ${duration}ms
-    Throughput: ${throughput} ops/sec
+    Duration: ${duration.toFixed(1)}ms
+    Throughput: ~${throughput} ops/sec  (smoke-test figure, not a measurement)
 
-    Note: Old array.shift() version would be O(n) for each wake operation,
-    resulting in O(n²) complexity for n waiting consumers.
-    With stack (pop), it's O(n) total complexity.`);
+    Waiters are nodes in an intrusive doubly-linked list, so waking one is
+    O(1) from any position and n waiters cost O(n) in total. An array-backed
+    queue using shift() would be O(n) per wake, i.e. O(n^2) overall.
+
+    This is a FIFO queue, not a stack: the longest-waiting caller is served
+    first. A stack is equally O(1) but starves the oldest waiter under
+    sustained contention — see test/fairness.test.ts.`);
 
     expect(duration).toBeLessThan(1000); // Should complete in under 1 second
   });
@@ -56,7 +68,7 @@ describe('Stack Optimization Benchmark', () => {
       return items;
     }
 
-    const start = Date.now();
+    const start = performance.now();
 
     // Start 10 producers and 10 consumers concurrently
     const producers = Array.from({ length: 10 }, (_, i) => producer(i));
@@ -64,15 +76,15 @@ describe('Stack Optimization Benchmark', () => {
 
     await Promise.all([...producers, ...consumers]);
 
-    const duration = Date.now() - start;
+    const duration = performance.now() - start;
     const totalOps = ITERATIONS * 20; // 10 producers + 10 consumers
     const throughput = Math.round(totalOps / (duration / 1000));
 
     console.log(`
     Mixed waiting (10 producers, 10 consumers):
     Total operations: ${totalOps}
-    Duration: ${duration}ms
-    Throughput: ${throughput} ops/sec`);
+    Duration: ${duration.toFixed(1)}ms
+    Throughput: ~${throughput} ops/sec  (smoke-test figure, not a measurement)`);
 
     expect(duration).toBeLessThan(2000);
   });

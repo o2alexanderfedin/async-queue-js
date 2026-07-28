@@ -36,7 +36,7 @@
     "test:stress": "jest --testNamePattern=\"stress\" --verbose --testTimeout=60000",
     "test:all": "jest",
     "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage",
+    "test:coverage": "jest --coverage --json --outputFile=reports/test-results.json",
     "generate:reports": "node scripts/generate-reports.js",
     "example": "ts-node examples/basic.ts",
     "example:backpressure": "ts-node examples/backpressure.ts",
@@ -44,7 +44,8 @@
     "example:iterator": "ts-node examples/async-iterator.ts",
     "benchmark": "ts-node benchmark/src/throughput.ts",
     "benchmark:compare": "ts-node benchmark/src/compare-implementations.ts",
-    "benchmark:native": "ts-node benchmark/src/compare-native.ts",
+    "benchmark:memory": "node --expose-gc -r ts-node/register/transpile-only benchmark/src/memory.ts",
+    "benchmark:all": "npm run benchmark && npm run benchmark:compare && npm run benchmark:memory",
     "benchmark:test": "jest benchmark/test/*.test.ts"
   },
   "repository": {

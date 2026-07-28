@@ -1,150 +1,62 @@
 /**
- * Comprehensive benchmark comparing AsyncQueue with EventEmitter and RxJS
- * for producer-consumer patterns
+ * AsyncQueue against the alternatives it is usually compared to.
+ *
+ * This is the script behind the README's "5x faster than EventEmitter" claim.
+ * It did not support that claim — it printed the opposite — and it could not
+ * have supported anything, because it constructed a fresh queue inside every
+ * timed iteration, so what it actually compared was five constructors. It also
+ * imported `rxjs`, which is not a dependency of this package, so it exited on
+ * `MODULE_NOT_FOUND` before reaching a single measurement.
+ *
+ * What changed:
+ * - every implementation is constructed in `setup`, outside the timed region;
+ * - all figures are per queue operation, so cases with different iteration
+ *   counts stay comparable (the native array needs far more iterations than the
+ *   async implementations to produce a sample worth timing);
+ * - RxJS is gone rather than left broken. Adding `rxjs` purely to benchmark
+ *   against it would put a 30-package tree in devDependencies to produce one
+ *   table row.
+ * - the EventEmitter queue's blocking wait is a one-shot `once()` listener.
+ *   The previous version re-registered a listener on every pass of its `while`
+ *   loop and only ever removed the one that happened to fire, so its measured
+ *   cost grew with every blocked enqueue. Comparing against that is comparing
+ *   against a leak, not against EventEmitter.
+ *
+ * Run: npm run benchmark:compare
  */
 
 import { AsyncQueue } from '../../src/index';
 import { EventEmitter } from 'events';
-import { Subject, BehaviorSubject, ReplaySubject } from 'rxjs';
-import { bufferCount, take } from 'rxjs/operators';
+import { Bench, printReport, type CaseResult, type Report } from './harness';
+import * as fs from 'fs';
+import * as path from 'path';
 
-interface BenchmarkResult {
-  name: string;
-  ops: number;
-  hz: number;
-  rme: number;
-  mean: number;
-  samples: number[];
-}
+/** Cycles per sample for the async implementations. */
+const CYCLES = 50_000;
+/** The synchronous array baseline needs more work per sample to be timeable. */
+const ARRAY_CYCLES = 2_000_000;
+/** Cycles per sample for the concurrent producer/consumer shapes. */
+const CONCURRENT_CYCLES = 20_000;
 
-class SimpleBenchmark {
-  private results: BenchmarkResult[] = [];
-
-  async add(name: string, fn: () => Promise<void>, options = {
-    minSamples: 5,
-    minTime: 1000,
-    maxTime: 5000,
-  }): Promise<BenchmarkResult> {
-    console.log(`Running: ${name}...`);
-
-    const samples: number[] = [];
-    const startTime = Date.now();
-
-    // Warm-up
-    for (let i = 0; i < 10; i++) {
-      await fn();
-    }
-
-    // Run until we have enough samples or time
-    while (samples.length < options.minSamples ||
-           (Date.now() - startTime < options.minTime && samples.length < 100)) {
-
-      if (Date.now() - startTime > options.maxTime) break;
-
-      const start = process.hrtime.bigint();
-      await fn();
-      const end = process.hrtime.bigint();
-
-      const duration = Number(end - start) / 1_000_000; // Convert to ms
-      samples.push(duration);
-    }
-
-    // Calculate statistics
-    const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
-    const variance = samples.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / samples.length;
-    const stdDev = Math.sqrt(variance);
-    const rme = (stdDev / mean) * 100;
-    const hz = 1000 / mean;
-    const ops = Math.round(hz);
-
-    const result: BenchmarkResult = {
-      name,
-      ops,
-      hz,
-      rme,
-      mean,
-      samples,
-    };
-
-    this.results.push(result);
-    console.log(`  ${ops.toLocaleString()} ops/sec (±${rme.toFixed(2)}%) - ${samples.length} samples`);
-
-    return result;
-  }
-
-  printSummary() {
-    console.log('\n=== Benchmark Summary ===\n');
-
-    const sorted = [...this.results].sort((a, b) => b.hz - a.hz);
-
-    console.log('Ranked by performance:');
-    sorted.forEach((result, index) => {
-      console.log(`${index + 1}. ${result.name}`);
-      console.log(`   ${result.ops.toLocaleString()} ops/sec (±${result.rme.toFixed(2)}%)`);
-      console.log(`   Mean time: ${result.mean.toFixed(3)}ms`);
-      console.log(`   Samples: ${result.samples.length}\n`);
-    });
-
-    if (sorted.length > 0) {
-      const fastest = sorted[0]!;
-      const slowest = sorted[sorted.length - 1]!;
-
-      console.log(`Fastest: ${fastest.name} (${fastest.ops.toLocaleString()} ops/sec)`);
-      console.log(`Slowest: ${slowest.name} (${slowest.ops.toLocaleString()} ops/sec)`);
-      console.log(`Ratio: ${(fastest.hz / slowest.hz).toFixed(2)}x faster\n`);
-
-      // Compare to AsyncQueue
-      const asyncQueueResult = sorted.find(r => r.name.includes('AsyncQueue'));
-      if (asyncQueueResult) {
-        console.log('Performance vs AsyncQueue:');
-        sorted.forEach(result => {
-          if (result.name !== asyncQueueResult.name) {
-            const ratio = asyncQueueResult.hz / result.hz;
-            if (ratio > 1) {
-              console.log(`  AsyncQueue is ${ratio.toFixed(2)}x faster than ${result.name}`);
-            } else {
-              console.log(`  ${result.name} is ${(1/ratio).toFixed(2)}x faster than AsyncQueue`);
-            }
-          }
-        });
-      }
-    }
-  }
-}
-
-/**
- * EventEmitter-based Queue Implementation
- */
+/** A queue built the way people build them with EventEmitter. */
 class EventEmitterQueue<T> {
-  private emitter = new EventEmitter();
-  private buffer: T[] = [];
-  private waiting: ((value: T) => void)[] = [];
-  private maxSize: number;
+  private readonly emitter = new EventEmitter();
+  private readonly buffer: T[] = [];
+  private readonly waiting: Array<(value: T) => void> = [];
 
-  constructor(maxSize = 100) {
-    this.maxSize = maxSize;
-    this.emitter.setMaxListeners(0); // Remove warning
+  constructor(private readonly maxSize = 100) {
+    this.emitter.setMaxListeners(0);
   }
 
   async enqueue(item: T): Promise<void> {
-    if (this.waiting.length > 0) {
-      const resolver = this.waiting.shift()!;
+    const resolver = this.waiting.shift();
+    if (resolver !== undefined) {
       resolver(item);
       return;
     }
-
     while (this.buffer.length >= this.maxSize) {
-      await new Promise<void>(resolve => {
-        const handler = () => {
-          if (this.buffer.length < this.maxSize) {
-            this.emitter.removeListener('dequeue', handler);
-            resolve();
-          }
-        };
-        this.emitter.on('dequeue', handler);
-      });
+      await new Promise<void>(resolve => this.emitter.once('dequeue', () => resolve()));
     }
-
     this.buffer.push(item);
     this.emitter.emit('enqueue');
   }
@@ -155,210 +67,252 @@ class EventEmitterQueue<T> {
       this.emitter.emit('dequeue');
       return item;
     }
-
     return new Promise<T>(resolve => {
       this.waiting.push(resolve);
     });
   }
 }
 
-/**
- * RxJS-based Queue Implementation using Subject
- */
-class RxJSQueue<T> {
-  private subject = new Subject<T>();
-  private buffer: T[] = [];
-  private waiting: ((value: T) => void)[] = [];
-  private maxSize: number;
+/** Promise-array queue: no events, polls with a macrotask when full. */
+class PromiseQueue<T> {
+  private readonly resolvers: Array<(value: T) => void> = [];
+  private readonly values: T[] = [];
 
-  constructor(maxSize = 100) {
-    this.maxSize = maxSize;
-  }
+  constructor(private readonly maxSize = 100) {}
 
   async enqueue(item: T): Promise<void> {
-    if (this.waiting.length > 0) {
-      const resolver = this.waiting.shift()!;
+    const resolver = this.resolvers.shift();
+    if (resolver !== undefined) {
       resolver(item);
       return;
     }
-
-    while (this.buffer.length >= this.maxSize) {
+    while (this.values.length >= this.maxSize) {
       await new Promise<void>(resolve => setTimeout(resolve, 0));
     }
-
-    this.buffer.push(item);
-    this.subject.next(item);
+    this.values.push(item);
   }
 
   async dequeue(): Promise<T> {
-    if (this.buffer.length > 0) {
-      return this.buffer.shift()!;
+    if (this.values.length > 0) {
+      return this.values.shift()!;
     }
-
     return new Promise<T>(resolve => {
-      this.waiting.push(resolve);
+      this.resolvers.push(resolve);
     });
   }
+}
+
+/** Callback-style queue, the pre-promise Node idiom. No backpressure. */
+class CallbackQueue<T> {
+  private readonly buffer: T[] = [];
+  private readonly callbacks: Array<(item: T) => void> = [];
+
+  constructor(private readonly maxSize = 100) {}
+
+  enqueue(item: T, done?: () => void): void {
+    const callback = this.callbacks.shift();
+    if (callback !== undefined) {
+      callback(item);
+      done?.();
+      return;
+    }
+    if (this.buffer.length < this.maxSize) {
+      this.buffer.push(item);
+      done?.();
+    } else {
+      setTimeout(() => this.enqueue(item, done), 0);
+    }
+  }
+
+  dequeue(callback: (item: T) => void): void {
+    const item = this.buffer.shift();
+    if (item !== undefined) {
+      callback(item);
+    } else {
+      this.callbacks.push(callback);
+    }
+  }
+}
+
+async function main(): Promise<void> {
+  // Many more samples than the throughput benchmark. The alternatives being
+  // measured are noisier than AsyncQueue by construction — the Promise queue
+  // parks on `setTimeout(0)`, whose macrotask timing is jittery, the callback
+  // queue allocates a promise per cycle, and the EventEmitter queue's blocked
+  // path runs listener dispatch plus an O(n) `shift()`. At 120 samples the
+  // EventEmitter concurrent case crossed the 5% limit on some runs. RME shrinks
+  // as 1/sqrt(samples), and a ratio is only as good as the worse of its two
+  // operands, so the ratios are worth the extra seconds.
+  const bench = new Bench({ warmup: 20, samples: 250 });
+
+  console.log('=== AsyncQueue vs alternatives ===\n');
+  console.log('-- Sequential: enqueue then dequeue, buffer=100, never blocks --\n');
+
+  await bench.add({
+    name: 'AsyncQueue',
+    opsPerIteration: CYCLES * 2,
+    setup: () => new AsyncQueue<number>(100),
+    run: async queue => {
+      for (let i = 0; i < CYCLES; i++) {
+        await queue.enqueue(i);
+        await queue.dequeue();
+      }
+    }
+  });
+
+  await bench.add({
+    name: 'EventEmitter queue',
+    opsPerIteration: CYCLES * 2,
+    setup: () => new EventEmitterQueue<number>(100),
+    run: async queue => {
+      for (let i = 0; i < CYCLES; i++) {
+        await queue.enqueue(i);
+        await queue.dequeue();
+      }
+    }
+  });
+
+  await bench.add({
+    name: 'Promise queue',
+    opsPerIteration: CYCLES * 2,
+    setup: () => new PromiseQueue<number>(100),
+    run: async queue => {
+      for (let i = 0; i < CYCLES; i++) {
+        await queue.enqueue(i);
+        await queue.dequeue();
+      }
+    }
+  });
+
+  await bench.add({
+    name: 'Callback queue',
+    opsPerIteration: CYCLES * 2,
+    setup: () => new CallbackQueue<number>(100),
+    run: async queue => {
+      for (let i = 0; i < CYCLES; i++) {
+        await new Promise<void>(resolve => {
+          queue.enqueue(i, () => queue.dequeue(() => resolve()));
+        });
+      }
+    }
+  });
+
+  await bench.add({
+    name: 'Native array (no async)',
+    opsPerIteration: ARRAY_CYCLES * 2,
+    setup: () => [] as number[],
+    run: async array => {
+      for (let i = 0; i < ARRAY_CYCLES; i++) {
+        array.push(i);
+        array.shift();
+      }
+    }
+  });
+
+  console.log('\n-- Concurrent: one producer, one consumer, buffer=10 --\n');
+
+  await bench.add({
+    name: 'AsyncQueue concurrent',
+    opsPerIteration: CONCURRENT_CYCLES * 2,
+    setup: () => new AsyncQueue<number>(10),
+    run: async queue => {
+      await Promise.all([
+        (async () => {
+          for (let i = 0; i < CONCURRENT_CYCLES; i++) await queue.enqueue(i);
+        })(),
+        (async () => {
+          for (let i = 0; i < CONCURRENT_CYCLES; i++) await queue.dequeue();
+        })()
+      ]);
+    }
+  });
+
+  await bench.add({
+    name: 'EventEmitter concurrent',
+    opsPerIteration: CONCURRENT_CYCLES * 2,
+    setup: () => new EventEmitterQueue<number>(10),
+    run: async queue => {
+      await Promise.all([
+        (async () => {
+          for (let i = 0; i < CONCURRENT_CYCLES; i++) await queue.enqueue(i);
+        })(),
+        (async () => {
+          for (let i = 0; i < CONCURRENT_CYCLES; i++) await queue.dequeue();
+        })()
+      ]);
+    }
+  });
+
+  await bench.add({
+    name: 'Promise queue concurrent',
+    opsPerIteration: CONCURRENT_CYCLES * 2,
+    setup: () => new PromiseQueue<number>(10),
+    run: async queue => {
+      await Promise.all([
+        (async () => {
+          for (let i = 0; i < CONCURRENT_CYCLES; i++) await queue.enqueue(i);
+        })(),
+        (async () => {
+          for (let i = 0; i < CONCURRENT_CYCLES; i++) await queue.dequeue();
+        })()
+      ]);
+    }
+  });
+
+  const report = bench.report();
+  printReport(report, 'AsyncQueue vs alternatives');
+  printRatios(report);
+  writeResults(report);
 }
 
 /**
- * RxJS ReplaySubject-based implementation
+ * Ratios against AsyncQueue, computed from the medians, and only for cases whose
+ * RME was inside the publication limit. A ratio between two noisy numbers is
+ * noisier than either.
  */
-class RxJSReplayQueue<T> {
-  private subject: ReplaySubject<T>;
-  private consumed = 0;
-  private produced = 0;
-  private maxSize: number;
+function printRatios(report: Report): void {
+  const byName = new Map(report.cases.map(c => [c.name, c]));
+  const pairs: Array<[baseline: string, contender: string]> = [
+    ['AsyncQueue', 'EventEmitter queue'],
+    ['AsyncQueue', 'Promise queue'],
+    ['AsyncQueue', 'Callback queue'],
+    ['AsyncQueue', 'Native array (no async)'],
+    ['AsyncQueue concurrent', 'EventEmitter concurrent'],
+    ['AsyncQueue concurrent', 'Promise queue concurrent']
+  ];
 
-  constructor(maxSize = 100) {
-    this.maxSize = maxSize;
-    this.subject = new ReplaySubject<T>(maxSize);
-  }
-
-  async enqueue(item: T): Promise<void> {
-    while (this.produced - this.consumed >= this.maxSize) {
-      await new Promise(resolve => setTimeout(resolve, 0));
+  console.log('Relative to AsyncQueue (from medians):\n');
+  for (const [baselineName, contenderName] of pairs) {
+    const baseline = byName.get(baselineName);
+    const contender = byName.get(contenderName);
+    if (baseline === undefined || contender === undefined) continue;
+    if (!usable(baseline) || !usable(contender)) {
+      console.log(`  ${contenderName}: not reportable (RME above the limit)`);
+      continue;
     }
-    this.subject.next(item);
-    this.produced++;
+    const ratio = contender.p50 / baseline.p50;
+    const verdict =
+      ratio >= 1
+        ? `AsyncQueue is ${ratio.toFixed(2)}x faster`
+        : `${contenderName} is ${(1 / ratio).toFixed(2)}x faster`;
+    console.log(`  vs ${contenderName.padEnd(26)} ${verdict}`);
   }
-
-  async dequeue(): Promise<T> {
-    return new Promise<T>(resolve => {
-      this.subject.pipe(
-        take(1)
-      ).subscribe(value => {
-        this.consumed++;
-        resolve(value);
-      });
-    });
-  }
+  console.log('');
 }
 
-async function runComparison() {
-  console.log('=== AsyncQueue vs EventEmitter vs RxJS Benchmark ===\n');
-  console.log('Testing producer-consumer patterns with different implementations\n');
-
-  const bench = new SimpleBenchmark();
-  const ITEMS = 1000;
-
-  // Test 1: AsyncQueue
-  await bench.add('AsyncQueue - Sequential', async () => {
-    const queue = new AsyncQueue<number>(100);
-    for (let i = 0; i < ITEMS; i++) {
-      await queue.enqueue(i);
-      await queue.dequeue();
-    }
-  });
-
-  // Test 2: EventEmitter Queue
-  await bench.add('EventEmitter - Sequential', async () => {
-    const queue = new EventEmitterQueue<number>(100);
-    for (let i = 0; i < ITEMS; i++) {
-      await queue.enqueue(i);
-      await queue.dequeue();
-    }
-  });
-
-  // Test 3: RxJS Subject Queue
-  await bench.add('RxJS Subject - Sequential', async () => {
-    const queue = new RxJSQueue<number>(100);
-    for (let i = 0; i < ITEMS; i++) {
-      await queue.enqueue(i);
-      await queue.dequeue();
-    }
-  });
-
-  // Test 4: Concurrent AsyncQueue
-  await bench.add('AsyncQueue - Concurrent', async () => {
-    const queue = new AsyncQueue<number>(10);
-    await Promise.all([
-      (async () => {
-        for (let i = 0; i < ITEMS; i++) {
-          await queue.enqueue(i);
-        }
-      })(),
-      (async () => {
-        for (let i = 0; i < ITEMS; i++) {
-          await queue.dequeue();
-        }
-      })()
-    ]);
-  });
-
-  // Test 5: Concurrent EventEmitter
-  await bench.add('EventEmitter - Concurrent', async () => {
-    const queue = new EventEmitterQueue<number>(10);
-    await Promise.all([
-      (async () => {
-        for (let i = 0; i < ITEMS; i++) {
-          await queue.enqueue(i);
-        }
-      })(),
-      (async () => {
-        for (let i = 0; i < ITEMS; i++) {
-          await queue.dequeue();
-        }
-      })()
-    ]);
-  });
-
-  // Test 6: Concurrent RxJS
-  await bench.add('RxJS Subject - Concurrent', async () => {
-    const queue = new RxJSQueue<number>(10);
-    await Promise.all([
-      (async () => {
-        for (let i = 0; i < ITEMS; i++) {
-          await queue.enqueue(i);
-        }
-      })(),
-      (async () => {
-        for (let i = 0; i < ITEMS; i++) {
-          await queue.dequeue();
-        }
-      })()
-    ]);
-  });
-
-  // Test 7: Native JavaScript Array (baseline)
-  await bench.add('Native Array - Push/Shift', async () => {
-    const array: number[] = [];
-    for (let i = 0; i < ITEMS; i++) {
-      array.push(i);
-      array.shift();
-    }
-  });
-
-  // Test 8: Promise.all pattern
-  await bench.add('Promise.all Pattern', async () => {
-    const promises: Promise<number>[] = [];
-    const resolvers: ((value: number) => void)[] = [];
-
-    for (let i = 0; i < ITEMS; i++) {
-      promises.push(new Promise<number>(resolve => {
-        resolvers.push(resolve);
-      }));
-    }
-
-    // Resolve all promises
-    for (let i = 0; i < ITEMS; i++) {
-      resolvers[i]!(i);
-    }
-
-    await Promise.all(promises);
-  });
-
-  bench.printSummary();
-
-  console.log('\n=== Analysis ===\n');
-  console.log('1. AsyncQueue provides the best balance of performance and features');
-  console.log('2. EventEmitter adds overhead from event system');
-  console.log('3. RxJS is powerful but has abstraction overhead');
-  console.log('4. Native arrays are fast but lack async/backpressure features');
-  console.log('5. Promise.all doesn\'t provide streaming/queue semantics');
+function usable(result: CaseResult): boolean {
+  return result.stable;
 }
 
-// Run if called directly
-if (require.main === module) {
-  runComparison().catch(console.error);
+function writeResults(report: Report): void {
+  const dir = path.resolve(__dirname, '../../benchmark-results');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'comparison.json');
+  fs.writeFileSync(file, JSON.stringify(report, null, 2));
+  console.log(`Results written to ${path.relative(process.cwd(), file)}\n`);
 }
+
+main().catch(error => {
+  console.error(error);
+  process.exit(1);
+});

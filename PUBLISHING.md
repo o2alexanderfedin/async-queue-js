@@ -118,9 +118,13 @@ Total size: ~47 KB packed / ~189 KB unpacked, 13 files.
 
 ## Version History
 
+See [CHANGELOG.md](./CHANGELOG.md) for the full history.
+
+- `2.0.0` - Dual ESM + CommonJS builds behind an `exports` map; `QueueClosedError`
+  survives the dual-package hazard; documentation corrected against measured
+  benchmarks (see [docs/PERFORMANCE.md](./docs/PERFORMANCE.md))
 - `1.0.0` - Initial release with AsyncIterator support
-  - High-performance circular buffer implementation
+  - Circular buffer implementation
   - Full TypeScript support
   - AsyncIterator/AsyncEnumerator adapter
   - Comprehensive test coverage
-  - 10M ops/sec throughput

@@ -126,6 +126,71 @@ types promised a class.
 - **`NaN` and fractional/huge `maxSize`** corrupted the circular buffer. `NaN` is
   rejected; out-of-range values are clamped to `AsyncQueue.MAX_CAPACITY`.
 
+### Documentation and benchmarks
+
+No runtime behaviour changed here. The published performance claims did not
+describe this code, and in several cases described the opposite of what it does.
+Everything is now measured by a script in the repository, on a recorded machine,
+with the run committed to `benchmark-results/`.
+
+- **The benchmark harness was rebuilt** (`benchmark/src/harness.ts`). Three
+  defects made its output unusable as measurement, all of which moved the
+  published numbers:
+  - it constructed a fresh queue *inside* the timed region, so the headline
+    figure was substantially the cost of `new Array(128)`;
+  - it reported `1000 / mean` per `fn()` call as "ops/sec" regardless of how many
+    queue operations `fn()` performed, so cases were not comparable to each other
+    (and the repo's own `npm run benchmark` printed 2.5M for what is really 26.7M);
+  - its "rme" was `stdDev / mean`, the coefficient of variation, which does not
+    shrink as samples accumulate — hence published values of 143%, 197%, 396%.
+    RME is now the 95% margin of error of the mean, and any case above 5% is
+    printed as `UNSTABLE` and excluded from the docs.
+
+  Timing is `performance.now()`; setup is untimed; p50/p90/p99 are reported
+  alongside ops/sec; and every run records CPU, cores, RAM, OS, Node and V8.
+
+- **`npm run benchmark:compare` works again.** It imported `rxjs`, which is not a
+  dependency, so it died on `MODULE_NOT_FOUND` before measuring anything. RxJS is
+  removed rather than left broken, and the "10x faster than RxJS" claim is gone
+  with it.
+
+- **`npm run benchmark:memory` is new.** Measures empty-queue footprint by
+  capacity, retention across a million messages, garbage produced per message
+  (via `v8.GCProfiler`), and heap behaviour across repeated 50,000-producer
+  bursts.
+
+- **`benchmark:native` and `benchmark/src/compare-native.ts` were removed** — a
+  near-duplicate of `benchmark:compare` with no sampling and no statistics at
+  all. `benchmark:compare` covers everything it did.
+
+- **The reports no longer publish invented numbers.**
+  `scripts/generate-benchmark-report.js` carried a hard-coded `sampleResults`
+  block — the origin of the README's "647K ops/sec" badge, a figure nothing had
+  ever measured, sitting four lines below a headline claiming 10,000,000. It now
+  reads `benchmark-results/throughput.json` and errors if there is no run to
+  report. `scripts/generate-reports.js` likewise reads live coverage, test and
+  version data instead of hard-coded "91.3% / 57 tests / 647K / v1.1.0".
+
+- **Corrected claims**, measured on an Apple M1 Pro / Node v23.11.0:
+  | Claim | Reality |
+  |---|---|
+  | "Direct Handoff… 2x faster… 200ns → 100ns" | Reversed. The handoff path is 81.0ns/op against 41.8ns/op for the buffered path. The mechanism is real but it buys atomic, in-order transfer — not speed. |
+  | "O(1) memory" | O(maxSize), allocated up front, 8 bytes/slot rounded to a power of two. The true O(1) property is in *messages passed through*: 1,000,000 messages move the retained heap by 168.7 KiB. |
+  | "Zero allocations in steady state" | 444.5 bytes of collectable garbage per message. Retention is flat — "bounded steady-state heap" is the accurate claim. |
+  | "10,000,000 ops/sec" / badge "647K" / `npm run benchmark` printing 2.5M | One measured set: 26.7M ops/sec, p50 37.4ns, on the recorded machine. |
+  | "5x faster than EventEmitter" | ~2x (2.15x sequential, 1.79x concurrent; 1.93x-2.19x across runs). The old script printed the *opposite* because it timed constructors. |
+  | "3.3x faster than Promise-based", "2.5x faster than Callback-based" | 1.71x and 1.49x. |
+  | "20x faster than naive array.shift()" | Reversed: a native array is 2.08x faster. It also cannot block, wait, or apply backpressure. |
+  | "~80 KB for maxSize=10,000" | 128.2 KiB. |
+  | "Circular buffer: 27-54% improvement", "Power-of-2 sizing: 15-20%" | Nothing measures either; removed. The measurable consequence — per-operation cost flat from `maxSize=1` to `maxSize=10,000` — is reported instead. |
+
+- **The FIFO claim was verified, not just kept.** `test/fifo-claim.test.ts` pins
+  it directly: 1,000 items through a capacity-4 queue from 40 interleaved
+  producers come out in `enqueue()` call order under a seeded random drain
+  schedule; 200 parked consumers are served in arrival order; the first blocked
+  producer is released by the first free slot with 498 producers queued behind
+  it.
+
 ## [1.1.0]
 
 - Machine specifications added to benchmark reports.

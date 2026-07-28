@@ -291,9 +291,12 @@ function generateBenchmarkHTML(results) {
                 <tr>
                     <th>Test Scenario</th>
                     <th>Operations/sec</th>
+                    <th>p50</th>
+                    <th>p90</th>
+                    <th>p99</th>
                     <th>Relative Margin</th>
                     <th>Samples</th>
-                    <th>Performance</th>
+                    <th>Measurement</th>
                 </tr>
             </thead>
             <tbody>
@@ -373,17 +376,24 @@ function generateBenchmarkHTML(results) {
 
 function generateTableRows(details) {
   return details.map(test => {
-    const performance = getPerformanceLevel(test.ops);
+    const performance = getPerformanceLevel(test);
     return `
         <tr>
             <td>${test.name}</td>
             <td><strong>${test.ops?.toLocaleString() || 'N/A'}</strong></td>
-            <td>±${test.rme || 'N/A'}%</td>
+            <td>${ns(test.p50)}</td>
+            <td>${ns(test.p90)}</td>
+            <td>${ns(test.p99)}</td>
+            <td>±${test.rme != null ? test.rme.toFixed(2) : 'N/A'}%</td>
             <td>${test.samples || 'N/A'}</td>
             <td><span class="badge badge-${performance}">${performance.toUpperCase()}</span></td>
         </tr>
     `;
   }).join('');
+}
+
+function ns(value) {
+  return value == null ? 'N/A' : `${value.toFixed(1)}ns`;
 }
 
 function generateChart(details) {
@@ -406,36 +416,74 @@ function generateChart(details) {
   }).join('');
 }
 
-function getPerformanceLevel(ops) {
-  if (ops > 100000) return 'success';
-  if (ops > 10000) return 'warning';
+/**
+ * The badge reports measurement QUALITY, not magnitude.
+ *
+ * It used to be `ops > 100000 ? 'success' : ...`, which rated a number good
+ * purely for being large — including the hard-coded sample numbers this script
+ * used to publish when no benchmark had run. A result is only worth anything if
+ * its relative margin of error is small enough to call it a measurement.
+ */
+function getPerformanceLevel(test) {
+  const rme = test.rme;
+  if (rme == null) return 'warning';
+  if (rme <= 5) return 'success';
+  if (rme <= 15) return 'warning';
   return 'danger';
 }
 
 // Export for use in benchmarks
 module.exports = { generateBenchmarkHTML };
 
-// If run directly, generate a sample report
-if (require.main === module) {
-  const sampleResults = {
-    enqueue: 198771,
-    dequeue: 53505,
-    cycle: 647920,
-    concurrent: 125000,
-    details: [
-      { name: 'Enqueue (empty queue)', ops: 198771, rme: 259.73, samples: 100 },
-      { name: 'Dequeue (pre-filled)', ops: 53505, rme: 59.06, samples: 100 },
-      { name: 'Enqueue+Dequeue cycle', ops: 647920, rme: 33.88, samples: 100 },
-      { name: 'Concurrent operations', ops: 125000, rme: 45.2, samples: 100 }
-    ],
+/**
+ * Loads the results of a real benchmark run.
+ *
+ * This function replaces a hard-coded `sampleResults` block that this script
+ * published as if it were a measurement — including `cycle: 647920`, the source
+ * of the README's "647K ops/sec" badge. Nothing had ever measured that number,
+ * and it sat four lines below a headline claiming 10,000,000 ops/sec. There is
+ * now no fallback on purpose: with no run to report, the correct output is an
+ * error, not a plausible-looking page.
+ */
+function loadResults() {
+  const file = path.join(__dirname, '..', 'benchmark-results', 'throughput.json');
+  if (!fs.existsSync(file)) {
+    throw new Error(
+      `No benchmark results at ${file}. Run "npm run benchmark" first — this script ` +
+        'reports measurements and has no sample data to fall back on.'
+    );
+  }
+
+  const report = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const byName = name => report.cases.find(c => c.name === name);
+  const opsOf = name => (byName(name) || {}).opsPerSecond;
+
+  return {
+    enqueue: opsOf('enqueue only (filling buffer)'),
+    dequeue: opsOf('dequeue only (pre-filled)'),
+    cycle: opsOf('cycle, buffered (no suspend)'),
+    concurrent: opsOf('concurrent 1P/1C, buffer=1024'),
+    details: report.cases.map(c => ({
+      name: c.name,
+      ops: c.opsPerSecond,
+      p50: c.p50,
+      p90: c.p90,
+      p99: c.p99,
+      rme: c.rme,
+      samples: c.samples
+    })),
+    machine: report.machine,
+    generatedAt: report.generatedAt,
     config: {
-      queueSize: 100,
-      duration: 'Auto',
-      warmup: 10
+      queueSize: 'per case, see table',
+      duration: `${report.cases[0] ? report.cases[0].samples : 0} samples per case`,
+      warmup: '20 untimed iterations per case'
     }
   };
+}
 
-  const html = generateBenchmarkHTML(sampleResults);
+if (require.main === module) {
+  const html = generateBenchmarkHTML(loadResults());
   fs.writeFileSync(path.join(reportsDir, 'benchmark-report.html'), html);
-  console.log('✅ Sample benchmark report generated: reports/benchmark-report.html');
+  console.log('✅ Benchmark report generated from benchmark-results/throughput.json');
 }

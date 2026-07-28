@@ -2,45 +2,70 @@
 
 **Developed by AI Hive® at [O2.services](https://o2.services)**
 
-A blazing-fast TypeScript implementation of an async producer-consumer queue with backpressure control, achieving **10 million operations per second**. Similar to Go channels and .NET Channel<T>, but optimized for JavaScript's event loop.
+A TypeScript async producer-consumer queue with backpressure control. Similar to
+Go channels and .NET `Channel<T>`, but built for JavaScript's event loop:
+strict FIFO for items *and* for blocked callers, a bounded circular buffer, and
+cancellation via `AbortSignal`.
+
+Measured at **26.7 million queue operations per second** — 37.4ns per operation
+at the median — on the machine recorded in
+[docs/PERFORMANCE.md](./docs/PERFORMANCE.md). Absolute numbers do not transfer
+between machines; run `npm run benchmark` on yours.
 
 📊 [Performance Metrics](./docs/PERFORMANCE.md) | 📚 [API Documentation](#api) | 🧪 [Examples](./examples/) | 📦 [NPM Package](https://www.npmjs.com/package/@alexanderfedin/async-queue)
 
 [![npm version](https://badge.fury.io/js/%40alexanderfedin%2Fasync-queue.svg)](https://www.npmjs.com/package/@alexanderfedin/async-queue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
-[![Test Report](https://img.shields.io/badge/Tests-57%20passing-brightgreen)](https://o2alexanderfedin.github.io/async-queue-js/test-report.html)
-[![Coverage](https://img.shields.io/badge/Coverage-91.3%25-brightgreen)](https://o2alexanderfedin.github.io/async-queue-js/coverage/)
-[![Benchmark](https://img.shields.io/badge/Performance-647K%20ops%2Fsec-blue)](https://o2alexanderfedin.github.io/async-queue-js/benchmark-report.html)
+[![Test Report](https://img.shields.io/badge/Tests-192%20passing-brightgreen)](https://o2alexanderfedin.github.io/async-queue-js/test-report.html)
+[![Coverage](https://img.shields.io/badge/Coverage-96.2%25-brightgreen)](https://o2alexanderfedin.github.io/async-queue-js/coverage/)
+[![Benchmark](https://img.shields.io/badge/Performance-26.7M%20ops%2Fsec-blue)](https://o2alexanderfedin.github.io/async-queue-js/benchmark-report.html)
 
 ## 📊 Live Reports
 
 View our comprehensive test, coverage, and performance reports:
 
-- 🧪 **[Test Report](https://o2alexanderfedin.github.io/async-queue-js/test-report.html)** - 57 tests passing with detailed execution results
-- 📈 **[Coverage Report](https://o2alexanderfedin.github.io/async-queue-js/coverage/)** - Interactive code coverage at 91.3%
+- 🧪 **[Test Report](https://o2alexanderfedin.github.io/async-queue-js/test-report.html)** - 192 tests passing (182 without the stress suite)
+- 📈 **[Coverage Report](https://o2alexanderfedin.github.io/async-queue-js/coverage/)** - 96.2% of statements, 91.2% of branches
 - ⚡ **[Benchmark Report](https://o2alexanderfedin.github.io/async-queue-js/benchmark-report.html)** - Performance metrics and comparisons
 - 📝 **[All Reports Dashboard](https://o2alexanderfedin.github.io/async-queue-js/)** - Central hub for all project metrics
 
 ## ⚡ Performance
 
-- **10,000,000 ops/sec** sequential throughput
-- **6,666,667 ops/sec** concurrent producer/consumer
-- **100-200 nanoseconds** latency per operation
-- **O(1)** enqueue/dequeue operations
-- **Zero allocations** in steady state
+Measured on an Apple M1 Pro (8 cores, 32 GiB, macOS 26.5.2, Node v23.11.0),
+100 samples per case, figures per queue operation:
 
-→ 📈 [See detailed performance analysis](./docs/PERFORMANCE.md)
+| | ops/sec | p50 | p99 |
+|---|--------:|----:|----:|
+| enqueue+dequeue cycle, buffer=1024 | 26,713,207 | 37.4ns | 40.2ns |
+| 1 producer / 1 consumer, buffer=1024 | 24,303,182 | 41.1ns | 46.9ns |
+| 4 producers / 1 consumer, buffer=16 | 16,795,079 | 59.5ns | 100.4ns |
+| item handed to a parked consumer | 12,346,251 | 81.0ns | 144.1ns |
+
+- **O(1) per operation** — cost is flat from `maxSize=1` to `maxSize=10,000`
+  (44.3ns → 45.2ns, a 2% spread across four orders of magnitude)
+- **Bounded steady-state heap** — 1,000,000 messages through an `AsyncQueue(1024)`
+  move the retained heap by 168.7 KiB. Retention is bounded by `maxSize`, not by
+  traffic. It is *not* allocation-free: the async interface costs ~444 bytes of
+  collectable garbage per message
+- **Memory is O(maxSize) at construction** — the circular buffer is allocated up
+  front at 8 bytes per slot, rounded up to a power of two. An empty
+  `AsyncQueue(10_000)` is 128.2 KiB; an empty `AsyncQueue(10_000_000)` is 128 MiB
+
+Run them yourself: `npm run benchmark:all`. Absolute figures are hardware- and
+runtime-specific and will not match on your machine.
+
+→ 📈 [Full analysis, method, and what these numbers replaced](./docs/PERFORMANCE.md)
 
 ## Features
 
-- **🚀 Blazing Fast**: Optimized circular buffer with power-of-2 sizing
+- **🚀 Fast**: 26.7M operations/sec measured, circular buffer with power-of-2 sizing
 - **🔒 Backpressure Control**: Automatically slows down producers when full
-- **💾 Memory Efficient**: Bounded buffer, and waiter storage that is released as waiters leave — a burst of blocked callers costs nothing once it is over
+- **💾 Bounded Memory**: the buffer is fixed at construction, and waiter storage is released as waiters leave — a burst of blocked callers costs ~305 bytes each while blocked and nothing once it is over
 - **⚙️ Configurable Buffer**: Control memory usage and coupling
 - **🔄 Non-blocking Async/Await**: Event loop friendly, no busy waiting
 - **🛑 Graceful Shutdown**: Close and drain remaining items
-- **📦 FIFO Ordering**: Strict first-in, first-out, for items *and* for blocked callers — the longest-waiting producer or consumer is always the next one served, so no caller can be starved
+- **📦 FIFO Ordering**: Strict first-in, first-out, for items *and* for blocked callers — the longest-waiting producer or consumer is always the next one served, so no caller can be starved. Pinned by `test/fifo-claim.test.ts`, not just asserted here
 - **👥 Multiple Producers/Consumers**: Safe concurrent access
 
 ## Installation
@@ -348,7 +373,7 @@ Takes up to n items from the queue
 2. **Power-of-2 Sizing**: Bitwise AND for modulo operations
 3. **FIFO Waiter Lists**: intrusive doubly-linked lists, O(1) push, pop *and* removal-from-the-middle — no `shift()`, and unlike a stack they cannot starve the longest-waiting caller
 4. **No Waiter Backing Store**: the list pointers live on the waiter record that has to exist anyway, so being queued costs no allocation and a burst of blocked callers is fully released once it passes
-5. **Direct Handoff**: Skip buffer when consumer is waiting
+5. **Direct Handoff**: when a consumer is already parked, `enqueue()` hands it the item without touching the buffer. This is a **correctness** mechanism, not a speed-up: the transfer and the unlinking happen in one synchronous step, so the longest-waiting consumer cannot be overtaken. Measured, it is *slower* per operation than the buffered path (81.0ns vs 41.8ns), because the cost is the suspension, not the buffer write. Earlier versions of this document claimed it was 2x faster; [that was wrong](./docs/PERFORMANCE.md#direct-handoff-what-it-is-and-what-it-is-not)
 
 ## How It Works
 
@@ -356,16 +381,24 @@ The AsyncQueue uses TypeScript Promises with performance optimizations:
 
 1. **Circular Buffer**: Uses head/tail pointers instead of array shifts
 2. **Blocking Behavior**: Producers/consumers await on Promises when full/empty
-3. **Wake Mechanism**: Direct resolver handoff for minimal latency
-4. **Memory Management**: bounded item buffer; waiter storage is per-waiter and released on departure, so nothing is retained at the concurrency high-water mark
+3. **Wake Mechanism**: the item travels *with* the waiter, so a woken caller never re-reads shared state and never loses a race to a later arrival
+4. **Memory Management**: the item buffer is bounded and allocated at construction; waiter storage is per-waiter and released on departure, so nothing is retained at the concurrency high-water mark
 
-This achieves 10M ops/sec throughput with predictable sub-microsecond latency.
+Measured p50 latency is 37-46ns per operation on the non-blocking paths and
+79-81ns when a caller has to suspend. See [docs/PERFORMANCE.md](./docs/PERFORMANCE.md).
 
 ## Buffer Size Trade-offs
 
-- **Small buffer (1)**: Tight coupling, minimal memory, immediate backpressure
-- **Large buffer**: Loose coupling, more memory, can handle traffic bursts
-- **Unbounded**: No backpressure (use regular array instead)
+Throughput barely moves with capacity — 44.3ns/op at `maxSize=1` against
+45.2ns/op at `maxSize=10,000` — so size the buffer for coupling and memory, not
+for speed.
+
+- **Small buffer (1)**: tight coupling, immediate backpressure, ~250 bytes
+- **Large buffer**: loose coupling, absorbs bursts, **8 bytes per slot allocated
+  up front** and rounded up to a power of two — `new AsyncQueue(10_000)` reserves
+  16,384 slots and costs 128.2 KiB before a single item is enqueued
+- **Unbounded**: not supported. The queue is bounded by construction; anything
+  above `2^30` is clamped
 
 ## Use Cases
 
@@ -386,15 +419,24 @@ npm run test:coverage # Generate coverage report
 ### Benchmarks
 
 ```bash
-npm run benchmark     # Run performance benchmarks
-npm run benchmark:compare  # Compare with EventEmitter/RxJS
+npm run benchmark          # throughput and latency, by queue shape and buffer size
+npm run benchmark:compare  # against EventEmitter-, Promise- and callback-based queues
+npm run benchmark:memory   # empty-queue footprint, retention, garbage per message
+npm run benchmark:all      # all three
 ```
 
-Comprehensive test suite covering:
+Each writes JSON to `benchmark-results/`, records the machine it ran on, reports
+p50/p90/p99 rather than a bare mean, and refuses to publish any case whose 95%
+relative margin of error exceeds 5% — it prints `UNSTABLE` instead.
+
+192 tests covering:
 - Basic enqueue/dequeue operations
 - Blocking behavior and backpressure
 - Multiple producers/consumers
-- Graceful shutdown
+- Graceful shutdown, and recovering the items a `close()` refused
+- Cancellation via `AbortSignal`, including cancelling from the middle of a waiter queue
+- Strict FIFO under contention, and starvation-freedom (`test/fifo-claim.test.ts`, `test/fairness.test.ts`)
+- The published package itself — `test/packaging.test.ts` plus `npm run verify:packaging`
 - Edge cases and error conditions
 - Stress tests with 100+ concurrent producers/consumers
 
@@ -408,24 +450,38 @@ Pull requests welcome! Please include tests for any new features.
 
 ## 📊 Performance Comparison
 
-| Implementation | Throughput | Latency | Memory | Backpressure |
-|----------------|------------|---------|--------|-------------|
-| **AsyncQueue** | **10M ops/sec** | **100ns** | Bounded | ✅ Built-in |
-| EventEmitter | 2M ops/sec | 500ns | Unbounded | ⚠️ Manual |
-| RxJS Subject | 1M ops/sec | 1000ns | Unbounded | ⚠️ Manual |
-| Promise Queue | 3M ops/sec | 333ns | Unbounded | ❌ None |
-| Native Array | 50M ops/sec* | 20ns | Unbounded | ❌ None |
+`npm run benchmark:compare`, 250 samples per case, all implementations
+constructed outside the timed region and measured by the same harness. Sequential
+enqueue+dequeue, buffer=100:
 
-*Native arrays lack async/await support and backpressure control
+| Implementation | ops/sec | p50 | Memory | Backpressure |
+|----------------|--------:|----:|--------|--------------|
+| **AsyncQueue** | **26,966,593** | **37.1ns** | Bounded by `maxSize` | ✅ Built-in |
+| Callback queue | 18,133,599 | 55.1ns | Unbounded | ❌ None |
+| Promise queue | 15,785,008 | 63.4ns | Unbounded | ❌ None |
+| EventEmitter queue | 12,565,510 | 79.6ns | Unbounded | ⚠️ Manual |
+| Native array | 56,084,889 | 17.8ns | Unbounded | ❌ None |
+
+The native array is a floor, not a competitor — it cannot block, wait, or apply
+backpressure. The gap to it (~19ns/op) is what the async interface costs.
+
+RxJS is not in the table. The script that was supposed to measure it imported a
+package that is not a dependency, so it never ran; the "10x faster than RxJS"
+figure the docs used to carry was never measured.
 
 ## 🎆 Why AsyncQueue?
 
-- **5x faster** than EventEmitter-based queues
-- **10x faster** than RxJS for producer-consumer patterns
-- **Predictable memory** usage with bounded buffers
-- **Zero-copy** operations with direct handoff
-- **Type-safe** with full TypeScript support
-- **Battle-tested** with comprehensive test coverage
+- **~2x faster** than an EventEmitter-based queue (2.15x sequential, 1.79x
+  concurrent; 1.93x-2.19x across runs — the EventEmitter implementation is the
+  noisiest thing in the comparison)
+- **1.7x faster** than a promise-array queue, **1.5x** than a callback queue
+- **Bounded memory**: retention is fixed by `maxSize` and does not grow with
+  traffic — 1,000,000 messages move the retained heap by 168.7 KiB
+- **Strict FIFO** for items *and* for blocked callers, pinned by tests
+  (`test/fifo-claim.test.ts`), so no producer or consumer can be starved
+- **Cancellable**: `AbortSignal` on both `enqueue()` and `dequeue()`
+- **Type-safe** with full TypeScript support, ESM and CommonJS builds
+- **192 tests**, 96.2% statement coverage
 
 ## 📖 Documentation
 

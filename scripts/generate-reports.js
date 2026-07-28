@@ -7,6 +7,57 @@ const path = require('path');
 console.log('📊 Generating comprehensive reports...\n');
 
 // Ensure reports directory exists
+/**
+ * Live project statistics, read from the artifacts the CI run just produced.
+ *
+ * This replaces four hard-coded values on the reports landing page — "91.3%",
+ * "57 tests", "647K ops/sec", "v1.1.0" — none of which were regenerated when
+ * the numbers behind them changed, and one of which ("647K") had never been
+ * measured at all. Anything missing renders as "N/A" rather than as a stale
+ * number that looks current.
+ */
+function readStats() {
+  const root = path.join(__dirname, '..');
+  const read = file => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(root, file), 'utf8'));
+    } catch {
+      return null;
+    }
+  };
+
+  const pkg = read('package.json');
+  const coverage = read('coverage/coverage-summary.json');
+  const tests = read('reports/test-results.json');
+  const bench = read('benchmark-results/throughput.json');
+
+  const headline =
+    bench && bench.cases
+      ? bench.cases.find(c => c.name === 'cycle, buffered (no suspend)')
+      : null;
+
+  const formatOps = ops => {
+    if (ops == null) return 'N/A';
+    if (ops >= 1e6) return `${(ops / 1e6).toFixed(1)}M`;
+    if (ops >= 1e3) return `${Math.round(ops / 1e3)}K`;
+    return String(ops);
+  };
+
+  return {
+    version: pkg ? `v${pkg.version}` : 'N/A',
+    statements: coverage ? `${coverage.total.statements.pct}%` : 'N/A',
+    branches: coverage ? `${coverage.total.branches.pct}%` : 'N/A',
+    functions: coverage ? `${coverage.total.functions.pct}%` : 'N/A',
+    testCount: tests ? String(tests.numTotalTests) : 'N/A',
+    testsPassing: tests ? (tests.numFailedTests === 0 ? '100% Passing' : `${tests.numFailedTests} failing`) : 'N/A',
+    ops: formatOps(headline ? headline.opsPerSecond : null),
+    opsDetail: headline ? `p50 ${headline.p50.toFixed(1)}ns, ±${headline.rme.toFixed(2)}%` : 'not measured',
+    machine: bench && bench.machine ? `${bench.machine.cpu}, Node ${bench.machine.node}` : 'unknown machine'
+  };
+}
+
+const stats = readStats();
+
 const reportsDir = path.join(__dirname, '..', 'reports');
 if (!fs.existsSync(reportsDir)) {
   fs.mkdirSync(reportsDir, { recursive: true });
@@ -212,19 +263,19 @@ const indexHTML = `<!DOCTYPE html>
 
             <div class="stats">
                 <div class="stat-card">
-                    <div class="stat-value">91.3%</div>
-                    <div class="stat-label">Code Coverage</div>
+                    <div class="stat-value">${stats.statements}</div>
+                    <div class="stat-label">Statement Coverage</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-value">57</div>
+                    <div class="stat-value">${stats.testCount}</div>
                     <div class="stat-label">Tests Passing</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-value">647K</div>
-                    <div class="stat-label">Ops/Second</div>
+                    <div class="stat-value">${stats.ops}</div>
+                    <div class="stat-label">Ops/Second (${stats.opsDetail})</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-value">v1.1.0</div>
+                    <div class="stat-value">${stats.version}</div>
                     <div class="stat-label">Latest Version</div>
                 </div>
             </div>
@@ -239,8 +290,8 @@ const indexHTML = `<!DOCTYPE html>
                 <p class="report-description">
                     Detailed test results with execution time, console output, and failure details.
                     <br><br>
-                    <span class="badge badge-success">57 Tests</span>
-                    <span class="badge badge-info">100% Passing</span>
+                    <span class="badge badge-success">${stats.testCount} Tests</span>
+                    <span class="badge badge-info">${stats.testsPassing}</span>
                 </p>
                 <a href="test-report.html" class="report-link">View Test Report →</a>
             </div>
@@ -251,8 +302,8 @@ const indexHTML = `<!DOCTYPE html>
                 <p class="report-description">
                     Interactive code coverage visualization with line-by-line analysis.
                     <br><br>
-                    <span class="badge badge-success">91.3% Branches</span>
-                    <span class="badge badge-info">100% Functions</span>
+                    <span class="badge badge-success">${stats.branches} Branches</span>
+                    <span class="badge badge-info">${stats.functions} Functions</span>
                 </p>
                 <a href="coverage/index.html" class="report-link">View Coverage →</a>
             </div>
@@ -261,9 +312,10 @@ const indexHTML = `<!DOCTYPE html>
                 <div class="report-icon">⚡</div>
                 <h2 class="report-title">Benchmark Report</h2>
                 <p class="report-description">
-                    Performance benchmarks showing throughput and operation metrics.
+                    Throughput and per-operation latency (p50/p90/p99), measured on
+                    ${stats.machine}.
                     <br><br>
-                    <span class="badge badge-success">647K ops/sec</span>
+                    <span class="badge badge-success">${stats.ops} ops/sec</span>
                     <span class="badge badge-info">O(1) Operations</span>
                 </p>
                 <a href="benchmark-report.html" class="report-link">View Benchmarks →</a>
@@ -275,7 +327,7 @@ const indexHTML = `<!DOCTYPE html>
                 <p class="report-description">
                     Published package on NPM registry with full TypeScript support.
                     <br><br>
-                    <span class="badge badge-success">Latest: v1.1.0</span>
+                    <span class="badge badge-success">Latest: ${stats.version}</span>
                     <span class="badge badge-info">MIT License</span>
                 </p>
                 <a href="https://www.npmjs.com/package/@alexanderfedin/async-queue" target="_blank" class="report-link">View on NPM →</a>
