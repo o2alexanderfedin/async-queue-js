@@ -1,7 +1,7 @@
 // Measures resident heap cost of an *empty* AsyncQueue as a function of maxSize,
 // and heap cost as a function of the number of messages passed through.
 // Run with: node --expose-gc repro-memory.js
-const { AsyncQueue } = require('../dist/index.js');
+const { AsyncQueue } = require('../dist/cjs/index.js');
 
 function heap() {
   global.gc(); global.gc(); global.gc();

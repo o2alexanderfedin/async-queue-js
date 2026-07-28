@@ -1,4 +1,4 @@
-const { AsyncQueue } = require('../dist/index.js');
+const { AsyncQueue } = require('../dist/cjs/index.js');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 (async () => {
   const q = new AsyncQueue(1);

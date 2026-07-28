@@ -1,7 +1,7 @@
 // D9 — waiter-storage retention and health-metric accuracy.
 //
 // Run: npm run build && node --expose-gc repro/repro-waiters.js
-// Optionally against another build:  node --expose-gc repro/repro-waiters.js /path/to/dist/index.js
+// Optionally against another build:  node --expose-gc repro/repro-waiters.js /path/to/dist/cjs/index.js
 //
 // Reference numbers from the ORIGINAL implementation (commit 9bc7022), whose
 // waiter queues were grow-only arrays ("reserved capacity - never shrink"):
@@ -13,7 +13,7 @@
 //   500 aborted producers still in the structure  : 500 records, unreachable
 //                                                   to GC until a pop walked
 //                                                   past them
-const { AsyncQueue } = require(process.argv[2] || '../dist/index.js');
+const { AsyncQueue } = require(process.argv[2] || '../dist/cjs/index.js');
 
 if (typeof global.gc !== 'function') {
   console.error('run with --expose-gc');

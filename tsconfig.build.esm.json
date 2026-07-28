@@ -1,0 +1,21 @@
+{
+  // ESM half of the dual build. Output lands in dist/esm, which is marked
+  // {"type":"module"} by scripts/write-dist-markers.js.
+  //
+  // This is the build an ESM consumer actually gets (the "import" condition of
+  // the exports map), and it is what makes `import AsyncQueue from '...'` a real
+  // constructor rather than a CommonJS namespace object.
+  //
+  // src/index.ts has zero imports, so moduleResolution never resolves anything;
+  // "bundler" is set only because "module": "esnext" requires a compatible one.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "outDir": "./dist/esm",
+    "declaration": true,
+    "declarationMap": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "test", "examples"]
+}

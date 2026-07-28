@@ -10,7 +10,7 @@
 //   2s sustained contention                        : 1531 later producers done,
 //                                                    FIRST producer NEVER woken
 //   200 dequeue rounds at maxSize=1                : FIRST NEVER woken
-const { AsyncQueue } = require('../dist/index.js');
+const { AsyncQueue } = require('../dist/cjs/index.js');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 (async () => {

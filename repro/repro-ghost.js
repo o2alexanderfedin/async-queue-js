@@ -1,4 +1,4 @@
-const { AsyncQueue } = require('../dist/index.js');
+const { AsyncQueue } = require('../dist/cjs/index.js');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // D3: an abandoned dequeue() waiter must not absorb an item that a live

@@ -1,6 +1,6 @@
 // Standalone, no test framework. Proves close() produces process-level
 // unhandled rejections for every blocked producer.
-const { AsyncQueue } = require('../dist/index.js');
+const { AsyncQueue } = require('../dist/cjs/index.js');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const unhandled = [];

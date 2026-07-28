@@ -1,5 +1,5 @@
 // No unhandledRejection handler at all -> Node's default mode is `throw` (>=15).
-const { AsyncQueue } = require('../dist/index.js');
+const { AsyncQueue } = require('../dist/cjs/index.js');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 (async () => {
   const q = new AsyncQueue(1);

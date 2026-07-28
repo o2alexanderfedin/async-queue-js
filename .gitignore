@@ -66,3 +66,5 @@ dist/
 # Generated reports (deployed to GitHub Pages)
 reports/
 *.html
+# Provenance check scratch dir (scripts/verify-provenance.js)
+.provenance-check/

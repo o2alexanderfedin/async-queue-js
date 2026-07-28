@@ -1,4 +1,4 @@
-const { AsyncQueue } = require('../dist/index.js');
+const { AsyncQueue } = require('../dist/cjs/index.js');
 const cases = [
   1, 2, 3, 4, 1023, 1024, 1025,
   2**29, 2**29+1, 2**30-1, 2**30, 2**30+1, 2**31-1, 2**31, 2**31+1,

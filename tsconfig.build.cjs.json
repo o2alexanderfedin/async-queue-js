@@ -1,0 +1,17 @@
+{
+  // CommonJS half of the dual build. Output lands in dist/cjs, which is marked
+  // {"type":"commonjs"} by scripts/write-dist-markers.js so its format does not
+  // depend on the root package.json "type" field.
+  //
+  // Emit must be exactly what tsc produces — nothing post-processes dist/.
+  // `npm run verify:provenance` rebuilds into a temp dir and byte-compares.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "outDir": "./dist/cjs",
+    "declaration": true,
+    "declarationMap": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "test", "examples"]
+}

@@ -1,5 +1,5 @@
 // Aggressive randomised lost-wakeup hunt over the PURE path (no abandoned waiters).
-const { AsyncQueue } = require('../dist/index.js');
+const { AsyncQueue } = require('../dist/cjs/index.js');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const jitter = async () => { const k = Math.floor(Math.random()*4); for (let i=0;i<k;i++) await Promise.resolve(); if (Math.random()<0.1) await sleep(0); };
 
