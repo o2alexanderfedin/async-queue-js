@@ -9,7 +9,13 @@ for (const n of cases) {
   try {
     const q = new AsyncQueue(n);
     const slots = q.buffer.length;
-    r = slots >= n ? `OK  slots=${slots}` : `*** BROKEN: slots=${slots} < maxSize=${n}`;
+    // The invariant is buffer slots >= EFFECTIVE capacity. Requests above
+    // AsyncQueue.MAX_CAPACITY (2^30) are documented to clamp, so compare against
+    // q.capacity, not against the raw request.
+    const clamped = q.capacity !== n ? ` (clamped from ${n})` : '';
+    r = slots >= q.capacity
+      ? `OK  slots=${slots} capacity=${q.capacity}${clamped}`
+      : `*** BROKEN: slots=${slots} < capacity=${q.capacity}`;
   } catch (e) { r = `*** THROWS: ${e.constructor.name}: ${e.message}`; }
   console.log(String(n).padStart(20), r);
 }

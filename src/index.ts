@@ -15,6 +15,29 @@
 type PromiseResolver = () => void;
 
 /**
+ * Largest capacity an AsyncQueue can be created with.
+ *
+ * The circular buffer is rounded up to a power of two, so the backing array for
+ * `MAX_CAPACITY` is exactly 2^30 slots. `2^31` would overflow the signed 32-bit
+ * shift used for the rounding, and array lengths above 2^32-1 are not
+ * representable at all, so this is the largest value that can be honoured.
+ */
+const MAX_CAPACITY = 2 ** 30;
+
+/**
+ * Rounds `n` up to the nearest power of two.
+ *
+ * Uses `2 ** k` rather than `1 << k`: the shift operator coerces to *signed*
+ * 32-bit, so `1 << 31` is negative (RangeError from `new Array`) and `1 << 32`
+ * silently wraps to 1 (a one-slot buffer that then overwrites itself).
+ *
+ * @param n A positive integer no greater than {@link MAX_CAPACITY}
+ */
+function nextPowerOfTwo(n: number): number {
+  return n <= 1 ? 1 : 2 ** (32 - Math.clz32(n - 1));
+}
+
+/**
  * AsyncQueue provides a thread-safe producer-consumer queue with backpressure control,
  * similar to .NET's Channel<T> or Go channels.
  * Uses a circular buffer for optimal performance.
@@ -38,17 +61,43 @@ export class AsyncQueue<T = any> {
   private closed = false;
 
   /**
+   * Largest capacity a queue can be created with (2^30).
+   * Larger requests are clamped to this value; see the constructor.
+   */
+  static readonly MAX_CAPACITY = MAX_CAPACITY;
+
+  /**
    * Creates a new AsyncQueue instance
+   *
    * @param maxSize Maximum number of items the queue can hold before producers block (default: 1)
+   *
+   * `maxSize` is normalised before use:
+   * - `NaN` and non-numbers are rejected (`TypeError`). `NaN < 1` is false, so an
+   *   unguarded comparison lets `NaN` through and then disables backpressure
+   *   entirely, because `count >= NaN` is also false.
+   * - Values below 1 are rejected (`Error`).
+   * - Non-integers are rounded **up** to the next integer, so the effective
+   *   capacity is never smaller than what the caller asked for.
+   * - `Infinity` and anything above {@link AsyncQueue.MAX_CAPACITY} are clamped to
+   *   `MAX_CAPACITY` (2^30). This queue is bounded by construction; there is no
+   *   unbounded mode. `capacity` reports the clamped value, not the request.
    */
   constructor(maxSize = 1) {
+    if (typeof maxSize !== 'number' || Number.isNaN(maxSize)) {
+      throw new TypeError(`maxSize must be a number, received ${String(maxSize)}`);
+    }
     if (maxSize < 1) {
       throw new Error('maxSize must be at least 1');
     }
+    // Round fractional requests up, and clamp anything unrepresentable (including
+    // Infinity) down to MAX_CAPACITY, so maxSize is always a usable integer.
+    this.maxSize = Math.min(
+      maxSize === Infinity ? MAX_CAPACITY : Math.ceil(maxSize),
+      MAX_CAPACITY
+    );
     // Use power of 2 for faster modulo operation with bitwise AND
     // Round up to nearest power of 2
-    this.maxSize = maxSize;
-    const bufferSize = 1 << (32 - Math.clz32(maxSize - 1));
+    const bufferSize = nextPowerOfTwo(this.maxSize);
     this.buffer = new Array(bufferSize);
 
     // Pre-allocate initial capacity for waiting queues

@@ -219,10 +219,22 @@ describe('DEFECT: constructor validation and large maxSize', () => {
     expect(() => new AsyncQueue(NaN)).toThrow();
   });
 
-  test('NaN maxSize disables backpressure and corrupts data', async () => {
-    const q = new AsyncQueue<number>(NaN);
-    for (let i = 0; i < 5; i++) await q.enqueue(i);   // never blocks
+  // REWRITTEN — the original was `NaN maxSize disables backpressure and corrupts data`,
+  // which constructed `new AsyncQueue(NaN)` and then round-tripped 5 items through it.
+  // That is unsatisfiable together with the test directly above it, which requires
+  // `new AsyncQueue(NaN)` to THROW. NaN cannot both throw and yield a working queue.
+  // Rejection is the correct half: a NaN capacity disables backpressure entirely,
+  // because `count >= NaN` is false for every count. So the corruption is now
+  // asserted to be *unreachable* rather than asserted to be *correct*.
+  test('NaN maxSize is rejected before it can disable backpressure', async () => {
+    expect(() => new AsyncQueue(NaN)).toThrow(TypeError);
+    expect(() => new AsyncQueue(NaN)).toThrow(/must be a number/);
+
+    // The exact workload the original test ran, on a capacity that IS accepted.
+    const q = new AsyncQueue<number>(5);
+    for (let i = 0; i < 5; i++) await q.enqueue(i);
     expect(q.size).toBe(5);
+    expect(q.isFull).toBe(true);              // backpressure is live, unlike under NaN
     const out: (number | undefined)[] = [];
     for (let i = 0; i < 5; i++) out.push(await q.dequeue());
     expect(out).toEqual([0, 1, 2, 3, 4]);
