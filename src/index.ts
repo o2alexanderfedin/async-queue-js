@@ -95,6 +95,17 @@ const DONE: DequeueResult<never> = Object.freeze({ done: true as const, value: u
 const ITERATOR_DONE = Object.freeze({ done: true, value: undefined }) as IteratorReturnResult<undefined>;
 
 /**
+ * `Symbol.asyncDispose`, with the same fallback TypeScript's own `using`
+ * downlevel helper uses. The symbol only exists on Node >= 20, and this package
+ * declares `engines.node >= 12`, so it cannot be referenced directly — a
+ * computed key of `undefined` would define a property literally named
+ * `"undefined"`.
+ */
+const ASYNC_DISPOSE: typeof Symbol.asyncDispose =
+  (Symbol as { asyncDispose?: typeof Symbol.asyncDispose }).asyncDispose ??
+  (Symbol.for('Symbol.asyncDispose') as typeof Symbol.asyncDispose);
+
+/**
  * Options accepted by {@link AsyncQueue.enqueue}, {@link AsyncQueue.dequeue} and
  * {@link AsyncQueue.dequeueResult}.
  */
@@ -752,14 +763,26 @@ export class AsyncQueue<T = any> {
    * ```
    */
   [Symbol.asyncIterator](): AsyncIterableIterator<T> {
+    return this.createCursor();
+  }
+
+  /**
+   * Builds one independent cursor over the queue.
+   *
+   * Hand-written rather than an `async function*`, and deliberately shaped to
+   * satisfy `AsyncGenerator<T>` as well as `AsyncIterableIterator<T>` so that
+   * *every* iteration entry point on this class shares it. A real async
+   * generator queues `return()`/`throw()` requests and cannot process them
+   * while suspended at an `await`, so an abandoned generator parked inside
+   * dequeue() stays parked until the queue closes — worker-pool teardown
+   * deadlocks. Owning the waiter directly lets return()/throw() cancel it
+   * synchronously.
+   */
+  private createCursor(): AsyncGenerator<T> {
     const queue = this;
     let finished = false;
     let pending: ConsumerWaiter<T> | null = null;
 
-    // Hand-written rather than an `async function*`. A generator suspended at an
-    // `await` cannot process a queued `return()` until that await settles, so an
-    // abandoned iterator would pin a waiter until close(). Owning the waiter
-    // directly lets return()/throw() cancel it immediately.
     const release = (): void => {
       finished = true;
       if (pending !== null) {
@@ -769,9 +792,9 @@ export class AsyncQueue<T = any> {
       }
     };
 
-    const iterator: AsyncIterableIterator<T> = {
-      [Symbol.asyncIterator](): AsyncIterableIterator<T> {
-        return iterator;
+    const cursor: AsyncGenerator<T> = {
+      [Symbol.asyncIterator](): AsyncGenerator<T> {
+        return cursor;
       },
 
       next(): Promise<IteratorResult<T>> {
@@ -802,18 +825,30 @@ export class AsyncQueue<T = any> {
         });
       },
 
+      // `value` is resolved rather than passed through, because a real
+      // generator's return() awaits a thenable argument before completing.
       return(value?: unknown): Promise<IteratorResult<T>> {
         release();
-        return Promise.resolve({ done: true, value } as IteratorReturnResult<unknown>);
+        return Promise.resolve(value).then(
+          (resolved): IteratorResult<T> => ({ done: true, value: resolved } as IteratorReturnResult<unknown>)
+        );
       },
 
       throw(error?: unknown): Promise<IteratorResult<T>> {
         release();
         return Promise.reject(error);
+      },
+
+      // Explicit resource management: `await using cursor = queue.iterate()...`
+      // releases the parked waiter on scope exit, which is the same teardown
+      // path as return() and the reason D7 is fixable at all.
+      [ASYNC_DISPOSE](): Promise<void> {
+        release();
+        return Promise.resolve();
       }
     };
 
-    return iterator;
+    return cursor;
   }
 
   /**
@@ -842,6 +877,16 @@ export class AsyncQueue<T = any> {
    * Useful for transformation pipelines.
    *
    * @returns An async generator that yields items from the queue
+   *
+   * This is **not** an `async function*`. It used to be, and that alone
+   * re-created the deadlock the hand-written iterator exists to avoid: a real
+   * async generator services `return()` from a request queue, and a generator
+   * suspended at an `await` (here, inside the delegated `yield*`) cannot reach
+   * that queue. `generator.return()` on a cursor parked in an empty queue
+   * therefore never settled, and only `close()` released it — so tearing down a
+   * pool of generator-based workers without closing the shared queue hung
+   * forever. It now returns the same hand-written cursor as `for await`.
+   *
    * @example
    * ```typescript
    * const queue = new AsyncQueue<number>();
@@ -857,10 +902,13 @@ export class AsyncQueue<T = any> {
    * for await (const item of double(generator)) {
    *   console.log(item);
    * }
+   *
+   * // Teardown without closing the queue:
+   * await generator.return(undefined);   // settles immediately
    * ```
    */
-  async *toAsyncGenerator(): AsyncGenerator<T> {
-    yield* this;
+  toAsyncGenerator(): AsyncGenerator<T> {
+    return this.createCursor();
   }
 
   /**
