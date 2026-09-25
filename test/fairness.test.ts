@@ -142,7 +142,12 @@ describe('D6: FIFO wake removes producer starvation', () => {
       while (!stop) { await q.dequeue(); await sleep(0); }
     })();
 
-    await sleep(300);
+    // Wait for a count of later producers, not a fixed time: sleep(0) is one
+    // timer tick, ~1ms on Linux/macOS but ~15.6ms on Windows, so 300ms held
+    // only ~20 ticks there and the throughput check failed on the timer, not the queue.
+    const LATER_TARGET = 50;
+    const deadline = Date.now() + 10000;
+    while (laterCompleted <= LATER_TARGET && Date.now() < deadline) await sleep(0);
     const starvedWhileBusy = !firstDone;
     const laterAtCheck = laterCompleted;
     stop = true;
@@ -151,7 +156,7 @@ describe('D6: FIFO wake removes producer starvation', () => {
     await Promise.allSettled([first, churn, drainer]);
 
     // The point of the measurement: hundreds of LATER producers got through.
-    expect(laterAtCheck).toBeGreaterThan(50);
+    expect(laterAtCheck).toBeGreaterThan(LATER_TARGET);
     // ...and the earliest one was not left behind while they did.
     expect(starvedWhileBusy).toBe(false);
   }, 30000);

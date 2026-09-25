@@ -373,15 +373,15 @@ describe('AsyncQueue Iterator', () => {
       })();
 
       const start = Date.now();
-      let count = 0;
+      const received: number[] = [];
 
       for await (const item of queue) {
-        count++;
-        expect(item).toBe(count - 1);
+        received.push(item);
       }
 
       const duration = Date.now() - start;
-      expect(count).toBe(ITEMS);
+      // Assert once after the loop: 10k in-loop expect() calls cost more than the queue itself
+      expect(received).toEqual(Array.from({ length: ITEMS }, (_, i) => i));
 
       // Should be very fast (typically < 100ms for 10k items)
       expect(duration).toBeLessThan(1000);
