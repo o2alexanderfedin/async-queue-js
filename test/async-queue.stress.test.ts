@@ -212,16 +212,14 @@ describe('AsyncQueue Stress Tests', () => {
 
       async function fastProducer(): Promise<void> {
         for (let i = 0; i < ITEM_COUNT; i++) {
+          // Count full-queue hits, not slow enqueues: "took > 1ms" depends on
+          // the runner's timer resolution, a full queue does not
+          if (queue.isFull) backpressureCount++;
           const start = Date.now();
           await queue.enqueue(i);
-          const elapsed = Date.now() - start;
+          maxBackpressureTime = Math.max(maxBackpressureTime, Date.now() - start);
 
           produced.push(i);
-
-          if (elapsed > 1) {
-            backpressureCount++;
-            maxBackpressureTime = Math.max(maxBackpressureTime, elapsed);
-          }
         }
         queue.close();
       }
@@ -242,7 +240,9 @@ describe('AsyncQueue Stress Tests', () => {
 
       expect(consumed).toEqual(produced);
       expect(consumed).toEqual(Array.from({ length: ITEM_COUNT }, (_, i) => i));
-      expect(backpressureCount).toBeGreaterThan(5); // Some enqueues should block
+      // The producer never waits on a timer, so once the 3 slots fill it hits a
+      // full queue on nearly every remaining item
+      expect(backpressureCount).toBeGreaterThan(ITEM_COUNT / 2);
 
       console.log(`      Backpressure events: ${backpressureCount}/${ITEM_COUNT}`);
       console.log(`      Max backpressure delay: ${maxBackpressureTime}ms`);
@@ -496,7 +496,7 @@ describe('AsyncQueue Stress Tests', () => {
   describe('Performance Benchmarks', () => {
     jest.setTimeout(60000); // Increase timeout for benchmarks
 
-    test('should measure throughput at different buffer sizes', async () => {
+    test('delivers every item in order at every buffer size, and prints throughput', async () => {
       const ITEM_COUNT = 500;
       const bufferSizes = [1, 10, 50, 100];
       const results: ThroughputResult[] = [];
@@ -535,16 +535,10 @@ describe('AsyncQueue Stress Tests', () => {
         results.push({ bufferSize, duration, throughput, producerBlocks });
       }
 
-      // What a bigger buffer buys is that the producer hits a full queue less
-      // often. Count those hits rather than comparing wall-clock throughput:
-      // each run is ~100ms made mostly of random timer waits, so one runner
-      // hiccup halves the measured throughput of either run.
-      const sortedByBuffer = [...results].sort((a, b) => a.bufferSize - b.bufferSize);
-      const smallBufferBlocks = sortedByBuffer[0]!.producerBlocks;
-      const largeBufferBlocks = sortedByBuffer[sortedByBuffer.length - 1]!.producerBlocks;
-
-      expect(largeBufferBlocks).toBeLessThan(smallBufferBlocks);
-
+      // No comparison across buffer sizes: each run is ~100ms made mostly of
+      // random timer waits, so any threshold on duration, throughput or block
+      // count measures the runner. Backpressure itself is pinned
+      // deterministically in async-queue.test.ts and in the test below.
       console.log('      Buffer Size | Duration | Throughput      | Producer blocks');
       console.log('      ------------|----------|-----------------|----------------');
       results.forEach(r => {

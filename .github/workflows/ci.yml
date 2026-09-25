@@ -16,6 +16,8 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     strategy:
+      # One flaky cell must not cancel the other 14: we need to see every failure
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         # Node 24 is the current LTS; 22 is maintenance LTS. 16/18 are kept
