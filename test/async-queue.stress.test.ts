@@ -16,6 +16,7 @@ interface ThroughputResult {
   bufferSize: number;
   duration: number;
   throughput: number;
+  producerBlocks: number;
 }
 
 // Utility function to add random delays simulating real-world variance
@@ -502,9 +503,12 @@ describe('AsyncQueue Stress Tests', () => {
 
       for (const bufferSize of bufferSizes) {
         const queue = new AsyncQueue<number>(bufferSize);
+        let producerBlocks = 0;
+        const received: number[] = [];
 
         async function producer(): Promise<void> {
           for (let i = 0; i < ITEM_COUNT; i++) {
+            if (queue.isFull) producerBlocks++;
             await queue.enqueue(i);
             // Small random delay for more realistic testing
             await randomDelay(0.95, 1);
@@ -516,6 +520,7 @@ describe('AsyncQueue Stress Tests', () => {
           while (true) {
             const item = await queue.dequeue();
             if (item === undefined) break;
+            received.push(item);
             // Small random delay for more realistic testing
             await randomDelay(0.95, 1);
           }
@@ -526,21 +531,24 @@ describe('AsyncQueue Stress Tests', () => {
         const duration = Date.now() - startTime;
         const throughput = Math.round(ITEM_COUNT / (duration / 1000));
 
-        results.push({ bufferSize, duration, throughput });
+        expect(received).toEqual(Array.from({ length: ITEM_COUNT }, (_, i) => i));
+        results.push({ bufferSize, duration, throughput, producerBlocks });
       }
 
-      // Larger buffers should generally have better throughput (allow some variance)
+      // What a bigger buffer buys is that the producer hits a full queue less
+      // often. Count those hits rather than comparing wall-clock throughput:
+      // each run is ~100ms made mostly of random timer waits, so one runner
+      // hiccup halves the measured throughput of either run.
       const sortedByBuffer = [...results].sort((a, b) => a.bufferSize - b.bufferSize);
-      const smallBufferThroughput = sortedByBuffer[0]!.throughput;
-      const largeBufferThroughput = sortedByBuffer[sortedByBuffer.length - 1]!.throughput;
+      const smallBufferBlocks = sortedByBuffer[0]!.producerBlocks;
+      const largeBufferBlocks = sortedByBuffer[sortedByBuffer.length - 1]!.producerBlocks;
 
-      // Allow for some variance in performance measurements
-      expect(largeBufferThroughput).toBeGreaterThan(smallBufferThroughput * 0.8);
+      expect(largeBufferBlocks).toBeLessThan(smallBufferBlocks);
 
-      console.log('      Buffer Size | Duration | Throughput');
-      console.log('      ------------|----------|------------');
+      console.log('      Buffer Size | Duration | Throughput      | Producer blocks');
+      console.log('      ------------|----------|-----------------|----------------');
       results.forEach(r => {
-        console.log(`      ${String(r.bufferSize).padEnd(11)} | ${String(r.duration + 'ms').padEnd(8)} | ${r.throughput} items/sec`);
+        console.log(`      ${String(r.bufferSize).padEnd(11)} | ${String(r.duration + 'ms').padEnd(8)} | ${String(r.throughput + ' items/sec').padEnd(15)} | ${r.producerBlocks}`);
       });
     });
 
