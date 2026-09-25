@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AsyncQueue Benchmark Report</title>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #1c2128;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent: #58a6ff;
+            --success: #3fb950;
+            --warning: #d29922;
+            --danger: #f85149;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 0;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        h1 {
+            color: var(--accent);
+            border-bottom: 2px solid var(--bg-tertiary);
+            padding-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .timestamp {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            margin-bottom: 2rem;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .metric-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 1.5rem;
+        }
+
+        .metric-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--success);
+            margin: 0.5rem 0;
+        }
+
+        .metric-label {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        th {
+            background: var(--bg-tertiary);
+            padding: 1rem;
+            text-align: left;
+            color: var(--accent);
+        }
+
+        td {
+            padding: 1rem;
+            border-top: 1px solid var(--bg-tertiary);
+        }
+
+        tr:hover {
+            background: var(--bg-tertiary);
+        }
+
+        .performance-bar {
+            height: 20px;
+            background: linear-gradient(90deg, var(--success) var(--width), transparent var(--width));
+            border-radius: 4px;
+            position: relative;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: bold;
+        }
+
+        .badge-success {
+            background: var(--success);
+            color: var(--bg-primary);
+        }
+
+        .badge-warning {
+            background: var(--warning);
+            color: var(--bg-primary);
+        }
+
+        .chart-container {
+            background: var(--bg-secondary);
+            border: 1px solid var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-top: 2rem;
+        }
+
+        .chart-bar {
+            display: flex;
+            align-items: center;
+            margin: 0.5rem 0;
+        }
+
+        .chart-label {
+            width: 150px;
+            color: var(--text-secondary);
+        }
+
+        .chart-value {
+            flex: 1;
+            height: 30px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .chart-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--success));
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding-right: 0.5rem;
+            color: var(--bg-primary);
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>
+            📊 AsyncQueue Performance Benchmark
+        </h1>
+        <div class="timestamp">Generated: 9/25/2026, 4:50:40 AM</div>
+
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">Enqueue Performance</div>
+                <div class="metric-value">22,168,191</div>
+                <div class="metric-label">operations/second</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Dequeue Performance</div>
+                <div class="metric-value">19,941,555</div>
+                <div class="metric-label">operations/second</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Cycle Performance</div>
+                <div class="metric-value">21,053,879</div>
+                <div class="metric-label">operations/second</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Concurrent Performance</div>
+                <div class="metric-value">19,525,579</div>
+                <div class="metric-label">operations/second</div>
+            </div>
+        </div>
+
+        <h2>Detailed Results</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Test Scenario</th>
+                    <th>Operations/sec</th>
+                    <th>p50</th>
+                    <th>p90</th>
+                    <th>p99</th>
+                    <th>Relative Margin</th>
+                    <th>Samples</th>
+                    <th>Measurement</th>
+                </tr>
+            </thead>
+            <tbody>
+                
+        <tr>
+            <td>cycle, buffered (no suspend)</td>
+            <td><strong>21,053,879</strong></td>
+            <td>47.5ns</td>
+            <td>49.5ns</td>
+            <td>49.8ns</td>
+            <td>±0.67%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+        <tr>
+            <td>enqueue only (filling buffer)</td>
+            <td><strong>22,168,191</strong></td>
+            <td>45.1ns</td>
+            <td>49.1ns</td>
+            <td>110.8ns</td>
+            <td>±5.42%</td>
+            <td>100</td>
+            <td><span class="badge badge-warning">WARNING</span></td>
+        </tr>
+    
+        <tr>
+            <td>dequeue only (pre-filled)</td>
+            <td><strong>19,941,555</strong></td>
+            <td>50.1ns</td>
+            <td>54.5ns</td>
+            <td>56.0ns</td>
+            <td>±0.74%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+        <tr>
+            <td>handoff, consumer parked first</td>
+            <td><strong>10,426,486</strong></td>
+            <td>95.9ns</td>
+            <td>99.4ns</td>
+            <td>100.5ns</td>
+            <td>±0.47%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+        <tr>
+            <td>via buffer, no consumer waiting</td>
+            <td><strong>18,058,149</strong></td>
+            <td>55.4ns</td>
+            <td>56.6ns</td>
+            <td>57.7ns</td>
+            <td>±0.29%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+        <tr>
+            <td>concurrent 1P/1C, buffer=1024</td>
+            <td><strong>19,525,579</strong></td>
+            <td>51.2ns</td>
+            <td>53.4ns</td>
+            <td>54.4ns</td>
+            <td>±0.47%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+        <tr>
+            <td>concurrent 1P/1C, buffer=1</td>
+            <td><strong>19,534,403</strong></td>
+            <td>51.2ns</td>
+            <td>53.4ns</td>
+            <td>54.8ns</td>
+            <td>±0.48%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+        <tr>
+            <td>concurrent 4P/1C, buffer=16</td>
+            <td><strong>9,671,955</strong></td>
+            <td>103.4ns</td>
+            <td>105.0ns</td>
+            <td>105.7ns</td>
+            <td>±0.24%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+        <tr>
+            <td>concurrent 1P/4C, buffer=16</td>
+            <td><strong>10,060,033</strong></td>
+            <td>99.4ns</td>
+            <td>101.7ns</td>
+            <td>102.7ns</td>
+            <td>±0.35%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+        <tr>
+            <td>burst 1024 in / 1024 out</td>
+            <td><strong>15,920,760</strong></td>
+            <td>62.8ns</td>
+            <td>63.5ns</td>
+            <td>63.9ns</td>
+            <td>±0.16%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+        <tr>
+            <td>cycle, buffer=1</td>
+            <td><strong>19,250,321</strong></td>
+            <td>51.9ns</td>
+            <td>52.5ns</td>
+            <td>55.2ns</td>
+            <td>±0.32%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+        <tr>
+            <td>cycle, buffer=10</td>
+            <td><strong>19,426,671</strong></td>
+            <td>51.5ns</td>
+            <td>52.1ns</td>
+            <td>52.6ns</td>
+            <td>±0.15%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+        <tr>
+            <td>cycle, buffer=100</td>
+            <td><strong>19,433,848</strong></td>
+            <td>51.5ns</td>
+            <td>52.2ns</td>
+            <td>53.3ns</td>
+            <td>±0.27%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+        <tr>
+            <td>cycle, buffer=1,000</td>
+            <td><strong>19,371,075</strong></td>
+            <td>51.6ns</td>
+            <td>52.3ns</td>
+            <td>56.4ns</td>
+            <td>±0.79%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+        <tr>
+            <td>cycle, buffer=10,000</td>
+            <td><strong>19,390,171</strong></td>
+            <td>51.6ns</td>
+            <td>52.0ns</td>
+            <td>52.7ns</td>
+            <td>±0.12%</td>
+            <td>100</td>
+            <td><span class="badge badge-success">SUCCESS</span></td>
+        </tr>
+    
+            </tbody>
+        </table>
+
+        <div class="chart-container">
+            <h3>Performance Comparison</h3>
+            
+        <div class="chart-bar">
+            <div class="chart-label">cycle, buffered (no suspend)</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 94.97337423698669%">
+                    21,053,879 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">enqueue only (filling buffer)</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 100%">
+                    22,168,191 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">dequeue only (pre-filled)</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 89.95571627833773%">
+                    19,941,555 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">handoff, consumer parked first</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 47.03354459549722%">
+                    10,426,486 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">via buffer, no consumer waiting</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 81.45973209992641%">
+                    18,058,149 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">concurrent 1P/1C, buffer=1024</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 88.07926185767705%">
+                    19,525,579 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">concurrent 1P/1C, buffer=1</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 88.11906663922193%">
+                    19,534,403 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">concurrent 4P/1C, buffer=16</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 43.62987940693943%">
+                    9,671,955 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">concurrent 1P/4C, buffer=16</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 45.38048684261156%">
+                    10,060,033 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">burst 1024 in / 1024 out</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 71.81803873847893%">
+                    15,920,760 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">cycle, buffer=1</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 86.83758183065096%">
+                    19,250,321 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">cycle, buffer=10</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 87.63309103570968%">
+                    19,426,671 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">cycle, buffer=100</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 87.66546625297481%">
+                    19,433,848 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">cycle, buffer=1,000</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 87.38229925933064%">
+                    19,371,075 ops/s
+                </div>
+            </div>
+        </div>
+    
+        <div class="chart-bar">
+            <div class="chart-label">cycle, buffer=10,000</div>
+            <div class="chart-value">
+                <div class="chart-fill" style="width: 87.46844070407008%">
+                    19,390,171 ops/s
+                </div>
+            </div>
+        </div>
+    
+        </div>
+
+        <div class="chart-container">
+            <h3>Test Configuration</h3>
+            <table>
+                <tr>
+                    <td>Queue Size</td>
+                    <td>per case, see table</td>
+                </tr>
+                <tr>
+                    <td>Test Duration</td>
+                    <td>100 samples per case</td>
+                </tr>
+                <tr>
+                    <td>Warm-up Cycles</td>
+                    <td>20 untimed iterations per case</td>
+                </tr>
+            </table>
+        </div>
+
+        <div class="chart-container">
+            <h3>Machine Specifications</h3>
+            <table>
+                <tr>
+                    <td>Environment</td>
+                    <td>🤖 CI/CD Runner</td>
+                </tr>
+                <tr>
+                    <td>CPU Model</td>
+                    <td>AMD EPYC 7763 64-Core Processor</td>
+                </tr>
+                <tr>
+                    <td>CPU Cores</td>
+                    <td>4 cores @ 0.00 GHz</td>
+                </tr>
+                <tr>
+                    <td>Total Memory</td>
+                    <td>15.6 GB</td>
+                </tr>
+                <tr>
+                    <td>Platform</td>
+                    <td>Linux (x64)</td>
+                </tr>
+                <tr>
+                    <td>OS Release</td>
+                    <td>6.17.0-1022-azure</td>
+                </tr>
+                <tr>
+                    <td>Node Version</td>
+                    <td>v24.21.0</td>
+                </tr>
+                
+                <tr>
+                    <td>Virtualization</td>
+                    <td>microsoft</td>
+                </tr>
+                <tr>
+                    <td>Host</td>
+                    <td>GitHub Actions 1000038157</td>
+                </tr>
+            </table>
+        </div>
+    </div>
+</body>
+</html>

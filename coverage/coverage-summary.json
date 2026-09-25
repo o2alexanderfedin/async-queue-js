@@ -1,0 +1,3 @@
+{"total": {"lines":{"total":255,"covered":248,"skipped":0,"pct":97.25},"statements":{"total":264,"covered":254,"skipped":0,"pct":96.21},"functions":{"total":53,"covered":51,"skipped":0,"pct":96.22},"branches":{"total":67,"covered":61,"skipped":0,"pct":91.04},"branchesTrue":{"total":0,"covered":0,"skipped":0,"pct":"Unknown"}}
+,"/home/runner/work/async-queue-js/async-queue-js/src/index.ts": {"lines":{"total":255,"covered":248,"skipped":0,"pct":97.25},"functions":{"total":53,"covered":51,"skipped":0,"pct":96.22},"statements":{"total":264,"covered":254,"skipped":0,"pct":96.21},"branches":{"total":67,"covered":61,"skipped":0,"pct":91.04}}
+}
